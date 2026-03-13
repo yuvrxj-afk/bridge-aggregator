@@ -1,0 +1,162 @@
+package store
+
+import (
+	"database/sql"
+	"encoding/json"
+	"time"
+
+	"bridge-aggregator/internal/models"
+
+	_ "github.com/lib/pq"
+)
+
+// Store wraps a PostgreSQL-backed store for operations.
+type Store struct {
+	DB *sql.DB
+}
+
+// Operation represents a bridge operation we track.
+type Operation struct {
+	ID                string
+	Route             models.Route
+	Status            string
+	ClientReferenceID string
+	IdempotencyKey    string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+// NewStore connects to Postgres and ensures the schema exists.
+func NewStore(databaseURL string) (*Store, error) {
+	db, err := sql.Open("postgres", databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	if err := db.Ping(); err != nil {
+		return nil, err
+	}
+
+	s := &Store{DB: db}
+	if err := s.initSchema(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Store) initSchema() error {
+	const ddl = `
+CREATE TABLE IF NOT EXISTS operations (
+  id TEXT PRIMARY KEY,
+  route JSONB NOT NULL,
+  status TEXT NOT NULL,
+  client_reference_id TEXT,
+  idempotency_key TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS operations_idempotency_key_idx
+  ON operations(idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+`
+	_, err := s.DB.Exec(ddl)
+	return err
+}
+
+// CreateOperation inserts a new operation, enforcing idempotency if key is non-empty.
+func (s *Store) CreateOperation(op Operation) (*Operation, error) {
+	if op.IdempotencyKey != "" {
+		if existing, err := s.GetOperationByIdempotencyKey(op.IdempotencyKey); err == nil && existing != nil {
+			return existing, nil
+		}
+	}
+
+	routeBytes, err := json.Marshal(op.Route)
+	if err != nil {
+		return nil, err
+	}
+
+	const q = `
+INSERT INTO operations (id, route, status, client_reference_id, idempotency_key)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING created_at, updated_at;
+`
+	row := s.DB.QueryRow(q, op.ID, routeBytes, op.Status, nullIfEmpty(op.ClientReferenceID), nullIfEmpty(op.IdempotencyKey))
+	if err := row.Scan(&op.CreatedAt, &op.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &op, nil
+}
+
+// GetOperation fetches an operation by ID.
+func (s *Store) GetOperation(id string) (*Operation, error) {
+	const q = `
+SELECT id, route, status, client_reference_id, idempotency_key, created_at, updated_at
+FROM operations
+WHERE id = $1;
+`
+	var (
+		row   Operation
+		rjson []byte
+	)
+	if err := s.DB.QueryRow(q, id).Scan(
+		&row.ID,
+		&rjson,
+		&row.Status,
+		&row.ClientReferenceID,
+		&row.IdempotencyKey,
+		&row.CreatedAt,
+		&row.UpdatedAt,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal(rjson, &row.Route); err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+// GetOperationByIdempotencyKey fetches an operation by idempotency key.
+func (s *Store) GetOperationByIdempotencyKey(key string) (*Operation, error) {
+	if key == "" {
+		return nil, nil
+	}
+	const q = `
+SELECT id, route, status, client_reference_id, idempotency_key, created_at, updated_at
+FROM operations
+WHERE idempotency_key = $1
+LIMIT 1;
+`
+	var (
+		row   Operation
+		rjson []byte
+	)
+	if err := s.DB.QueryRow(q, key).Scan(
+		&row.ID,
+		&rjson,
+		&row.Status,
+		&row.ClientReferenceID,
+		&row.IdempotencyKey,
+		&row.CreatedAt,
+		&row.UpdatedAt,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal(rjson, &row.Route); err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}

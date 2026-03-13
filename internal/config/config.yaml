@@ -1,0 +1,9 @@
+port: 8080
+database_url: postgres://user:pass@localhost/db
+rpc_url: https://rpc.ankr.com/eth
+across_api_url: https://app.across.to/api
+across_api_key: ""
+stargate_api_url: https://transfer.layerzero-api.com/v1
+stargate_api_key: ""
+blockdaemon_api_url: https://svc.blockdaemon.com
+blockdaemon_api_key: ""

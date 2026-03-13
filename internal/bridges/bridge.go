@@ -1,8 +1,14 @@
 package bridges
 
-import "bridge-aggregator/internal/models"
+import (
+	"context"
 
-type BridgeAdapter interface {
-	Name() string
-	GetQuote(req models.QuoteRequest) (models.Quote, error)
+	"bridge-aggregator/internal/models"
+)
+
+// Adapter is the bridge provider adapter interface.
+// Each implementation returns a single Route (e.g. one hop) for a quote request.
+type Adapter interface {
+	ID() string
+	GetQuote(ctx context.Context, req models.QuoteRequest) (*models.Route, error)
 }
