@@ -3,14 +3,13 @@ package bridges
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"bridge-aggregator/internal/models"
 )
 
 // StargateChainKeys are chain names we support for Stargate (API uses same slugs).
 var StargateChainKeys = map[string]bool{
-	"ethereum": true, "arbitrum": true, "optimism": true, "polygon": true,
+	"ethereum": true, "arbitrum": true, "optimism": true, "polygon": true, "base": true,
 }
 
 // StargateAdapter implements Adapter for Stargate/LayerZero bridge.
@@ -29,43 +28,29 @@ func (s StargateAdapter) GetQuote(ctx context.Context, req models.QuoteRequest) 
 	if s.Client == nil {
 		return nil, fmt.Errorf("stargate: client not configured")
 	}
+	if s.Client.APIKey == "" {
+		return nil, fmt.Errorf("stargate: not configured (missing api key)")
+	}
 
-	fromChain := strings.ToLower(req.Source.Chain)
-	toChain := strings.ToLower(req.Destination.Chain)
+	// Prefer address-first, but we still require chain keys for LayerZero VT API.
+	src, err := resolveBridgeEndpoint(req.Source)
+	if err != nil {
+		return nil, fmt.Errorf("stargate: %w", err)
+	}
+	dst, err := resolveBridgeEndpoint(req.Destination)
+	if err != nil {
+		return nil, fmt.Errorf("stargate: %w", err)
+	}
+
+	fromChain := src.ChainKey
+	toChain := dst.ChainKey
 	if !StargateChainKeys[fromChain] {
 		return nil, fmt.Errorf("stargate: unsupported source chain: %s", req.Source.Chain)
 	}
 	if !StargateChainKeys[toChain] {
 		return nil, fmt.Errorf("stargate: unsupported destination chain: %s", req.Destination.Chain)
 	}
-
-	originChain, ok := ChainNameToID[fromChain]
-	if !ok {
-		return nil, fmt.Errorf("stargate: unsupported source chain: %s", req.Source.Chain)
-	}
-	destChain, ok := ChainNameToID[toChain]
-	if !ok {
-		return nil, fmt.Errorf("stargate: unsupported destination chain: %s", req.Destination.Chain)
-	}
-
-	originTokens := TokenByChainAndSymbol[originChain]
-	destTokens := TokenByChainAndSymbol[destChain]
-	if originTokens == nil || destTokens == nil {
-		return nil, fmt.Errorf("stargate: token registry missing for chain(s)")
-	}
-
-	fromSymbol := strings.ToUpper(req.Source.Asset)
-	toSymbol := strings.ToUpper(req.Destination.Asset)
-	inputToken, ok := originTokens[fromSymbol]
-	if !ok {
-		return nil, fmt.Errorf("stargate: unsupported input asset %s on %s", fromSymbol, req.Source.Chain)
-	}
-	outputToken, ok := destTokens[toSymbol]
-	if !ok {
-		return nil, fmt.Errorf("stargate: unsupported output asset %s on %s", toSymbol, req.Destination.Chain)
-	}
-
-	amountSmallest, err := HumanToSmallest(req.Amount, inputToken.Decimals)
+	amountSmallest, err := resolveAmountBaseUnits(req, src.Token.Decimals)
 	if err != nil {
 		return nil, fmt.Errorf("stargate: invalid amount: %w", err)
 	}
@@ -82,8 +67,8 @@ func (s StargateAdapter) GetQuote(ctx context.Context, req models.QuoteRequest) 
 	q, err := s.Client.GetQuote(
 		ctx,
 		amountSmallest,
-		inputToken.Address,
-		outputToken.Address,
+		src.Token.Address,
+		dst.Token.Address,
 		fromChain,
 		toChain,
 		depositor,
@@ -102,10 +87,14 @@ func (s StargateAdapter) GetQuote(ctx context.Context, req models.QuoteRequest) 
 		Hops: []models.Hop{
 			{
 				BridgeID:     "stargate",
-				FromChain:    req.Source.Chain,
-				ToChain:      req.Destination.Chain,
-				FromAsset:    fromSymbol,
-				ToAsset:      toSymbol,
+				HopType:      models.HopTypeBridge,
+				FromChain:    firstNonEmptyString(req.Source.Chain, src.ChainKey),
+				ToChain:      firstNonEmptyString(req.Destination.Chain, dst.ChainKey),
+				FromAsset:    src.Symbol,
+				ToAsset:      dst.Symbol,
+				FromTokenAddress: src.Token.Address,
+				ToTokenAddress: dst.Token.Address,
+				AmountInBaseUnits: amountSmallest,
 				EstimatedFee: q.TotalFeeAmount,
 			},
 		},

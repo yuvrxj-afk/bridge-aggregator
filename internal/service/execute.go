@@ -13,12 +13,20 @@ import (
 )
 
 var (
-	ErrRouteRequired     = errors.New("route is required in request body")
-	ErrRouteHopsEmpty    = errors.New("route must have at least one hop")
-	ErrUnknownBridgeID   = errors.New("route hop bridge_id is not a registered adapter")
+	ErrRouteRequired   = errors.New("route is required in request body")
+	ErrRouteHopsEmpty  = errors.New("route must have at least one hop")
+	ErrUnknownBridgeID = errors.New("route hop bridge_id is not a registered adapter")
+	ErrNoBridgeHop     = errors.New("route must contain at least one bridge hop")
+	ErrInvalidStatus   = errors.New("status must be one of: submitted, completed, failed")
 )
 
-// ValidateExecuteRequest checks route presence, non-empty hops, and that the first hop's bridge_id is registered.
+var validTransitionStatuses = map[string]bool{
+	models.OperationStatusSubmitted: true,
+	models.OperationStatusCompleted: true,
+	models.OperationStatusFailed:    true,
+}
+
+// ValidateExecuteRequest checks route presence, non-empty hops, and that at least one bridge hop's bridge_id is registered.
 func ValidateExecuteRequest(req models.ExecuteRequest, adapterIDs map[string]bool) error {
 	if req.Route == nil {
 		return ErrRouteRequired
@@ -26,11 +34,23 @@ func ValidateExecuteRequest(req models.ExecuteRequest, adapterIDs map[string]boo
 	if len(req.Route.Hops) == 0 {
 		return ErrRouteHopsEmpty
 	}
-	firstBridgeID := req.Route.Hops[0].BridgeID
-	if firstBridgeID == "" || !adapterIDs[firstBridgeID] {
+
+	// Execute is still bridge-centric (recording a bridge operation). For composed routes,
+	// we require at least one bridge hop whose BridgeID matches a registered bridge adapter.
+	for _, h := range req.Route.Hops {
+		hopType := h.HopType
+		if hopType == "" {
+			hopType = models.HopTypeBridge
+		}
+		if hopType != models.HopTypeBridge {
+			continue
+		}
+		if h.BridgeID != "" && adapterIDs[h.BridgeID] {
+			return nil
+		}
 		return ErrUnknownBridgeID
 	}
-	return nil
+	return ErrNoBridgeHop
 }
 
 // Execute creates an operation for the given route (idempotent when idempotency_key is provided).
@@ -91,9 +111,22 @@ func GetOperation(ctx context.Context, s *store.Store, id string) (*models.Opera
 	return &models.OperationResponse{
 		OperationID:       op.ID,
 		Status:            op.Status,
+		TxHash:            op.TxHash,
 		Route:             op.Route,
 		ClientReferenceID: op.ClientReferenceID,
 		CreatedAt:         op.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:         op.UpdatedAt.Format(time.RFC3339),
 	}, nil
+}
+
+// UpdateOperationStatus transitions an operation to a new status.
+// Only submitted/completed/failed are allowed; pending is the initial state set by Execute.
+func UpdateOperationStatus(ctx context.Context, s *store.Store, id string, req models.UpdateOperationStatusRequest) error {
+	if !validTransitionStatuses[req.Status] {
+		return ErrInvalidStatus
+	}
+	if err := s.UpdateOperationStatus(id, req.Status, req.TxHash); err != nil {
+		return err
+	}
+	return nil
 }

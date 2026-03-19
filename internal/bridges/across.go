@@ -2,8 +2,8 @@ package bridges
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"strings"
 
 	"bridge-aggregator/internal/models"
 )
@@ -23,49 +23,36 @@ func (a AcrossAdapter) GetQuote(ctx context.Context, req models.QuoteRequest) (*
 		return nil, fmt.Errorf("across: client not configured")
 	}
 
-	originChain, ok := ChainNameToID[strings.ToLower(req.Source.Chain)]
-	if !ok {
-		return nil, fmt.Errorf("across: unsupported source chain: %s", req.Source.Chain)
+	src, err := resolveBridgeEndpoint(req.Source)
+	if err != nil {
+		return nil, fmt.Errorf("across: %w", err)
 	}
-	destChain, ok := ChainNameToID[strings.ToLower(req.Destination.Chain)]
-	if !ok {
-		return nil, fmt.Errorf("across: unsupported destination chain: %s", req.Destination.Chain)
-	}
-
-	originTokens := TokenByChainAndSymbol[originChain]
-	destTokens := TokenByChainAndSymbol[destChain]
-	if originTokens == nil || destTokens == nil {
-		return nil, fmt.Errorf("across: token registry missing for chain(s)")
+	dst, err := resolveBridgeEndpoint(req.Destination)
+	if err != nil {
+		return nil, fmt.Errorf("across: %w", err)
 	}
 
-	fromSymbol := strings.ToUpper(req.Source.Asset)
-	toSymbol := strings.ToUpper(req.Destination.Asset)
-
-	inputToken, ok := originTokens[fromSymbol]
-	if !ok {
-		return nil, fmt.Errorf("across: unsupported input asset %s on %s", fromSymbol, req.Source.Chain)
-	}
-	outputToken, ok := destTokens[toSymbol]
-	if !ok {
-		return nil, fmt.Errorf("across: unsupported output asset %s on %s", toSymbol, req.Destination.Chain)
-	}
-
+	// Prefer request-level address (if valid), then fall back to the configured depositor.
+	// Reject placeholder strings like "0xYourWallet" that are not valid EVM addresses.
 	depositor := req.Source.Address
-	if depositor == "" {
-		depositor = "0x0000000000000000000000000000000000000001"
+	if !IsValidEVMAddress(depositor) {
+		depositor = a.Client.Depositor
+	}
+	if !IsValidEVMAddress(depositor) {
+		return nil, fmt.Errorf("across: depositor address required — set ACROSS_DEPOSITOR env var or pass a valid source.address")
 	}
 
-	amountSmallest, err := HumanToSmallest(req.Amount, inputToken.Decimals)
+	amountSmallest, err := resolveAmountBaseUnits(req, src.Token.Decimals)
 	if err != nil {
 		return nil, fmt.Errorf("across: invalid amount: %w", err)
 	}
 
 	q, err := a.Client.GetQuote(
 		ctx,
-		int64(originChain),
-		int64(destChain),
-		inputToken.Address,
-		outputToken.Address,
+		int64(src.ChainID),
+		int64(dst.ChainID),
+		src.Token.Address,
+		dst.Token.Address,
 		amountSmallest,
 		depositor,
 	)
@@ -77,6 +64,17 @@ func (a AcrossAdapter) GetQuote(ctx context.Context, req models.QuoteRequest) (*
 	timeSec := q.ExpectedFillTimeSec
 	outputAmount := q.ExpectedOutputAmount
 
+	// Build provider_data: always include the tier, and embed the deposit params
+	// when Across returned them so stepTransaction can build the on-chain call.
+	pdPayload := map[string]any{
+		"source":   string(ProviderTierDirect),
+		"protocol": "across_v3",
+	}
+	if q.Deposit != nil {
+		pdPayload["deposit"] = q.Deposit
+	}
+	providerData, _ := json.Marshal(pdPayload)
+
 	return &models.Route{
 		RouteID:               "across",
 		Score:                 0,
@@ -85,12 +83,17 @@ func (a AcrossAdapter) GetQuote(ctx context.Context, req models.QuoteRequest) (*
 		TotalFee:              fee,
 		Hops: []models.Hop{
 			{
-				BridgeID:     "across",
-				FromChain:    req.Source.Chain,
-				ToChain:      req.Destination.Chain,
-				FromAsset:    fromSymbol,
-				ToAsset:      toSymbol,
-				EstimatedFee: fee,
+				BridgeID:          "across",
+				HopType:           models.HopTypeBridge,
+				FromChain:         firstNonEmptyString(req.Source.Chain, src.ChainKey),
+				ToChain:           firstNonEmptyString(req.Destination.Chain, dst.ChainKey),
+				FromAsset:         src.Symbol,
+				ToAsset:           dst.Symbol,
+				FromTokenAddress:  src.Token.Address,
+				ToTokenAddress:    dst.Token.Address,
+				AmountInBaseUnits: amountSmallest,
+				EstimatedFee:      fee,
+				ProviderData:      providerData,
 			},
 		},
 	}, nil

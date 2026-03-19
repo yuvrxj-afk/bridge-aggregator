@@ -55,9 +55,9 @@ func NewBlockdaemonClient(baseURL string, apiKey string) *BlockdaemonClient {
 
 // BlockdaemonQuoteResult is the best quote from the aggregator (first in sorted list).
 type BlockdaemonQuoteResult struct {
-	BridgeID       string
-	BridgeName     string
-	AmountOut      string // human-readable
+	BridgeID         string
+	BridgeName       string
+	AmountOut        string // base units (smallest denomination of the destination token)
 	EstimatedTimeSec int64
 }
 
@@ -109,13 +109,11 @@ func (c *BlockdaemonClient) GetBridgeQuotes(ctx context.Context, srcChainID, dst
 	}
 
 	best := &data.Data[0]
-	decimals := 6
-	if strings.EqualFold(dstTokenSymbol, "ETH") {
-		decimals = 18
-	}
+	// AmountsOut[1] is the expected output in the destination token's smallest units.
+	// Store it as-is so callers receive consistent base-unit amounts.
 	amountOut := ""
 	if len(best.AmountsOut) >= 2 {
-		amountOut, _ = toHumanAmount(best.AmountsOut[1], decimals)
+		amountOut = best.AmountsOut[1]
 	}
 	if amountOut == "" {
 		amountOut = "0"

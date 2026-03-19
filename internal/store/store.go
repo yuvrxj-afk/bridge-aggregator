@@ -22,6 +22,7 @@ type Operation struct {
 	Status            string
 	ClientReferenceID string
 	IdempotencyKey    string
+	TxHash            string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS operations (
   status TEXT NOT NULL,
   client_reference_id TEXT,
   idempotency_key TEXT,
+  tx_hash TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -58,6 +60,9 @@ CREATE TABLE IF NOT EXISTS operations (
 CREATE INDEX IF NOT EXISTS operations_idempotency_key_idx
   ON operations(idempotency_key)
   WHERE idempotency_key IS NOT NULL;
+
+-- Migration: add tx_hash column to existing deployments (safe no-op if already present).
+ALTER TABLE operations ADD COLUMN IF NOT EXISTS tx_hash TEXT;
 `
 	_, err := s.DB.Exec(ddl)
 	return err
@@ -88,10 +93,29 @@ RETURNING created_at, updated_at;
 	return &op, nil
 }
 
+// UpdateOperationStatus sets the status (and optionally tx_hash) for an operation.
+// Valid statuses: pending, submitted, completed, failed.
+func (s *Store) UpdateOperationStatus(id, status, txHash string) error {
+	const q = `
+UPDATE operations
+SET status = $2, tx_hash = COALESCE(NULLIF($3, ''), tx_hash), updated_at = now()
+WHERE id = $1;
+`
+	res, err := s.DB.Exec(q, id, status, txHash)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // GetOperation fetches an operation by ID.
 func (s *Store) GetOperation(id string) (*Operation, error) {
 	const q = `
-SELECT id, route, status, client_reference_id, idempotency_key, created_at, updated_at
+SELECT id, route, status, client_reference_id, idempotency_key, tx_hash, created_at, updated_at
 FROM operations
 WHERE id = $1;
 `
@@ -105,6 +129,7 @@ WHERE id = $1;
 		&row.Status,
 		&row.ClientReferenceID,
 		&row.IdempotencyKey,
+		&row.TxHash,
 		&row.CreatedAt,
 		&row.UpdatedAt,
 	); err != nil {
@@ -125,7 +150,7 @@ func (s *Store) GetOperationByIdempotencyKey(key string) (*Operation, error) {
 		return nil, nil
 	}
 	const q = `
-SELECT id, route, status, client_reference_id, idempotency_key, created_at, updated_at
+SELECT id, route, status, client_reference_id, idempotency_key, tx_hash, created_at, updated_at
 FROM operations
 WHERE idempotency_key = $1
 LIMIT 1;
@@ -140,6 +165,7 @@ LIMIT 1;
 		&row.Status,
 		&row.ClientReferenceID,
 		&row.IdempotencyKey,
+		&row.TxHash,
 		&row.CreatedAt,
 		&row.UpdatedAt,
 	); err != nil {

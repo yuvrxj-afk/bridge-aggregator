@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"bridge-aggregator/internal/ethutil"
 )
 
 // LayerZero Value Transfer API (replaces deprecated Stargate API).
@@ -178,13 +180,13 @@ func (c *StargateClient) GetQuote(ctx context.Context, amountSmallestUnits, srcT
 	}
 
 	result := &StargateQuoteResult{}
-	result.DstAmount, _ = toHumanAmount(q0.DstAmount, decimals)
+	result.DstAmount, _ = ethutil.FormatUnits(q0.DstAmount, decimals)
 	result.TotalFeeAmount = q0.FeeUsd
 	if result.TotalFeeAmount == "" {
 		result.TotalFeeAmount = "0"
 		for _, f := range q0.Fees {
 			if f.Amount != "" {
-				feeHuman, _ := toHumanAmount(f.Amount, decimals)
+				feeHuman, _ := ethutil.FormatUnits(f.Amount, decimals)
 				result.TotalFeeAmount = feeHuman
 				break
 			}
