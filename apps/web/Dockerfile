@@ -3,6 +3,10 @@ FROM oven/bun:1.1.38-alpine AS builder
 
 WORKDIR /app
 
+# Some transitive web deps (e.g. usb/node-gyp chain) need Python/toolchain
+# during install in Alpine-based builder images.
+RUN apk add --no-cache python3 make g++ linux-headers
+
 # Copy workspace root manifests first — cached until they change.
 COPY package.json bun.lock turbo.json ./
 COPY apps/web/package.json ./apps/web/
