@@ -48,7 +48,7 @@ func NewBlockdaemonClient(baseURL string, apiKey string) *BlockdaemonClient {
 		BaseURL: strings.TrimSuffix(baseURL, "/"),
 		APIKey:  apiKey,
 		HTTPClient: &http.Client{
-			Timeout: 20 * time.Second,
+			Timeout: 5 * time.Second,
 		},
 	}
 }
@@ -124,6 +124,79 @@ func (c *BlockdaemonClient) GetBridgeQuotes(ctx context.Context, srcChainID, dst
 		BridgeName:       best.BridgeName,
 		AmountOut:        amountOut,
 		EstimatedTimeSec: 120,
+	}, nil
+}
+
+// TransactionStatus represents the status of a cross-chain transaction.
+type TransactionStatus struct {
+	TxHash      string `json:"txHash"`
+	Status      string `json:"status"`           // "pending", "completed", "failed"
+	BridgeUsed  string `json:"bridgeUsed"`
+	Progress    int    `json:"progress"`         // 0-100
+	Timestamp   int64  `json:"timestamp"`
+	Message     string `json:"message,omitempty"`
+}
+
+// TransactionStatusResponse is the GET /defi/v1/transaction/status/{txHash} response.
+type TransactionStatusResponse struct {
+	Status int    `json:"status"`
+	Msg    string `json:"msg"`
+	Data   struct {
+		TxHash      string `json:"txHash"`
+		Status      string `json:"status"`
+		BridgeName  string `json:"bridgeName"`
+		Progress    int    `json:"progress"`
+		Timestamp   int64  `json:"timestamp"`
+	} `json:"data"`
+}
+
+// GetTransactionStatus calls GET /defi/v1/transaction/status/{txHash}.
+// Returns the status of a cross-chain transaction for tracking purposes.
+func (c *BlockdaemonClient) GetTransactionStatus(ctx context.Context, txHash string) (*TransactionStatus, error) {
+	if txHash == "" {
+		return nil, fmt.Errorf("blockdaemon: txHash is required")
+	}
+
+	u := fmt.Sprintf("%s/defi/v1/transaction/status/%s", c.BaseURL, txHash)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.APIKey != "" {
+		req.Header.Set("X-API-Key", c.APIKey)
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("blockdaemon: %d %s", resp.StatusCode, shortHTTPErrorBlockdaemon(resp.StatusCode, body))
+	}
+
+	var data TransactionStatusResponse
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, fmt.Errorf("blockdaemon status response decode: %w", err)
+	}
+	if data.Status != 200 {
+		return nil, fmt.Errorf("blockdaemon: status check failed (status=%d msg=%s)", data.Status, data.Msg)
+	}
+
+	return &TransactionStatus{
+		TxHash:     data.Data.TxHash,
+		Status:     data.Data.Status,
+		BridgeUsed: data.Data.BridgeName,
+		Progress:   data.Data.Progress,
+		Timestamp:  data.Data.Timestamp,
+		Message:    data.Msg,
 	}, nil
 }
 

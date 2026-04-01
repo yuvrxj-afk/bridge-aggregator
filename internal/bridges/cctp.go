@@ -19,7 +19,8 @@ import (
 // - MessageTransmitterV2.receiveMessage(...)
 type CCTPAdapter struct{}
 
-func (c CCTPAdapter) ID() string { return "cctp" }
+func (c CCTPAdapter) ID() string   { return "cctp" }
+func (c CCTPAdapter) Tier() models.AdapterTier { return models.TierProduction }
 
 // cctpSupportedChainIDs restricts CCTP quotes to chains with known contract deployments.
 var cctpSupportedChainIDs = map[ChainID]bool{
@@ -62,6 +63,38 @@ var cctpMessageTransmitter = map[ChainID]string{
 	ChainIDArbitrum: "0xC30362313FBBA5cf9163F0bb16a0e01f01A896ca",
 	ChainIDBase:     "0xAD09780d193884d503182aD4588450C416D6F9D4",
 	ChainIDPolygon:  "0xF3be9355363857F3e001be68856A2f96b4C39Ba9",
+}
+
+// registerCCTPTestnetChains adds Sepolia testnet chain IDs and contract addresses to the CCTP
+// registries. Called by RegisterTestnetChains() when NETWORK=testnet. Safe to call multiple times.
+// Testnet contract addresses sourced from https://developers.circle.com/stablecoins/evm-smart-contracts
+func registerCCTPTestnetChains() {
+	// Testnet chain support
+	cctpSupportedChainIDs[ChainIDSepolia] = true
+	cctpSupportedChainIDs[ChainIDBaseSepolia] = true
+	cctpSupportedChainIDs[ChainIDArbitrumSepolia] = true
+	cctpSupportedChainIDs[ChainIDOPSepolia] = true
+
+	// CCTP domain IDs are the same for mainnet and testnet counterparts.
+	cctpDomainID[ChainIDSepolia] = 0         // same domain as Ethereum mainnet
+	cctpDomainID[ChainIDOPSepolia] = 2        // same domain as OP mainnet
+	cctpDomainID[ChainIDArbitrumSepolia] = 3  // same domain as Arbitrum mainnet
+	cctpDomainID[ChainIDBaseSepolia] = 6      // same domain as Base mainnet
+
+	// Testnet TokenMessenger addresses (all four chains share the same address on testnet).
+	const testnetTokenMessenger = "0x9f3B8679c73C2Fef8b59B4f3444d4e156fb70AA5"
+	cctpTokenMessenger[ChainIDSepolia] = testnetTokenMessenger
+	cctpTokenMessenger[ChainIDBaseSepolia] = testnetTokenMessenger
+	cctpTokenMessenger[ChainIDOPSepolia] = testnetTokenMessenger
+	cctpTokenMessenger[ChainIDArbitrumSepolia] = testnetTokenMessenger
+
+	// Testnet MessageTransmitter addresses.
+	// Arbitrum Sepolia has a distinct address; the others share one.
+	const testnetMessageTransmitter = "0x7865fAfC2db2093669d92c0F33AeEF291086BEFD"
+	cctpMessageTransmitter[ChainIDSepolia] = testnetMessageTransmitter
+	cctpMessageTransmitter[ChainIDBaseSepolia] = testnetMessageTransmitter
+	cctpMessageTransmitter[ChainIDOPSepolia] = testnetMessageTransmitter
+	cctpMessageTransmitter[ChainIDArbitrumSepolia] = "0xaCF1ceeF35caAc005e15888dDb8A3515C41B4872"
 }
 
 func (c CCTPAdapter) GetQuote(ctx context.Context, req models.QuoteRequest) (*models.Route, error) {

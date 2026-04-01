@@ -2,6 +2,7 @@ package bridges
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"bridge-aggregator/internal/models"
@@ -19,8 +20,15 @@ type StargateAdapter struct {
 }
 
 // ID returns the bridge identifier.
-func (s StargateAdapter) ID() string {
-	return "stargate"
+func (s StargateAdapter) ID() string { return "stargate" }
+
+// Tier returns TierUncredentialed when no API key is configured (excluded from fan-out),
+// or TierProduction when fully configured.
+func (s StargateAdapter) Tier() models.AdapterTier {
+	if s.Client == nil || s.Client.APIKey == "" {
+		return models.TierUncredentialed
+	}
+	return models.TierProduction
 }
 
 // GetQuote returns a quote from Stargate API when Client is set; otherwise returns an error.
@@ -78,6 +86,18 @@ func (s StargateAdapter) GetQuote(ctx context.Context, req models.QuoteRequest) 
 		return nil, err
 	}
 
+	pd, _ := json.Marshal(map[string]any{
+		"source":            string(ProviderTierDirect),
+		"protocol":          "layerzero_stargate_v2",
+		"src_chain_key":     fromChain,
+		"dst_chain_key":     toChain,
+		"src_token_address": src.Token.Address,
+		"dst_token_address": dst.Token.Address,
+		"amount":            amountSmallest,
+		"src_wallet":        depositor,
+		"dst_wallet":        recipient,
+	})
+
 	return &models.Route{
 		RouteID:               "stargate",
 		Score:                 0,
@@ -86,16 +106,17 @@ func (s StargateAdapter) GetQuote(ctx context.Context, req models.QuoteRequest) 
 		TotalFee:              q.TotalFeeAmount,
 		Hops: []models.Hop{
 			{
-				BridgeID:     "stargate",
-				HopType:      models.HopTypeBridge,
-				FromChain:    firstNonEmptyString(req.Source.Chain, src.ChainKey),
-				ToChain:      firstNonEmptyString(req.Destination.Chain, dst.ChainKey),
-				FromAsset:    src.Symbol,
-				ToAsset:      dst.Symbol,
-				FromTokenAddress: src.Token.Address,
-				ToTokenAddress: dst.Token.Address,
+				BridgeID:          "stargate",
+				HopType:           models.HopTypeBridge,
+				FromChain:         firstNonEmptyString(req.Source.Chain, src.ChainKey),
+				ToChain:           firstNonEmptyString(req.Destination.Chain, dst.ChainKey),
+				FromAsset:         src.Symbol,
+				ToAsset:           dst.Symbol,
+				FromTokenAddress:  src.Token.Address,
+				ToTokenAddress:    dst.Token.Address,
 				AmountInBaseUnits: amountSmallest,
-				EstimatedFee: q.TotalFeeAmount,
+				EstimatedFee:      q.TotalFeeAmount,
+				ProviderData:      pd,
 			},
 		},
 	}, nil

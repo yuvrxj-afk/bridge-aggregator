@@ -1,5 +1,12 @@
 package bridges
 
+import (
+	"encoding/json"
+	"strings"
+
+	"bridge-aggregator/internal/models"
+)
+
 // ChainID is an EVM chain ID.
 type ChainID int64
 
@@ -11,6 +18,17 @@ const (
 	ChainIDPolygon  ChainID = 137
 	ChainIDBSC      ChainID = 56
 	ChainIDAvax     ChainID = 43114
+	// ChainIDSolana is a sentinel for Solana mainnet. Solana has no EVM chain ID;
+	// 900 is used internally to distinguish it from all real EVM chains.
+	ChainIDSolana ChainID = 900
+
+	// Testnet chain IDs — only activated when NETWORK=testnet via RegisterTestnetChains().
+	ChainIDSepolia         ChainID = 11155111
+	ChainIDBaseSepolia     ChainID = 84532
+	ChainIDArbitrumSepolia ChainID = 421614
+	ChainIDOPSepolia       ChainID = 11155420
+	// ChainIDSolanaDevnet is a sentinel for Solana devnet (distinct from mainnet sentinel 900).
+	ChainIDSolanaDevnet ChainID = 901
 )
 
 // TokenInfo is a token's contract address and decimals on a chain.
@@ -21,13 +39,23 @@ type TokenInfo struct {
 
 // ChainNameToID maps our API chain names (lowercase) to chain IDs.
 var ChainNameToID = map[string]ChainID{
-	"ethereum": ChainIDEthereum,
-	"base":     ChainIDBase,
-	"arbitrum": ChainIDArbitrum,
-	"optimism": ChainIDOptimism,
-	"polygon":  ChainIDPolygon,
-	"bsc":      ChainIDBSC,
+	"ethereum":  ChainIDEthereum,
+	"base":      ChainIDBase,
+	"arbitrum":  ChainIDArbitrum,
+	"optimism":  ChainIDOptimism,
+	"polygon":   ChainIDPolygon,
+	"bsc":       ChainIDBSC,
 	"avalanche": ChainIDAvax,
+	"solana":    ChainIDSolana,
+}
+
+// ChainIDFromName maps a lowercase chain name to its integer chain ID, returning 0 if unknown.
+func ChainIDFromName(name string) int64 {
+	id, ok := ChainNameToID[strings.ToLower(name)]
+	if !ok {
+		return 0
+	}
+	return int64(id)
 }
 
 // TokenByChainAndSymbol maps (chain ID, symbol) to token address and decimals.
@@ -104,4 +132,93 @@ var TokenByChainAndSymbol = map[ChainID]map[string]TokenInfo{
 		"DAI":  {Address: "0xd586E7F844cEa2F87f50152665BCbc2C279D8d70", Decimals: 18},
 		"WBTC": {Address: "0x50b7545627a5162F82A992c33b87aDc75187B218", Decimals: 8},
 	},
+	// Solana mainnet — token addresses are SPL mint pubkeys (base58).
+	// SOL uses the Wrapped SOL mint as its canonical address (Mayan convention).
+	ChainIDSolana: {
+		"SOL":  {Address: "So11111111111111111111111111111111111111112", Decimals: 9},
+		"USDC": {Address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", Decimals: 6},
+		"USDT": {Address: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", Decimals: 6},
+	},
+}
+
+// RegisterTestnetChains activates testnet chain IDs, token addresses, and adapter contract
+// registries. Called once at startup when NETWORK=testnet. Safe to call multiple times.
+// Does NOT modify any mainnet chain IDs or token addresses.
+func RegisterTestnetChains() {
+	// Chain name → ID mappings for testnet chains.
+	ChainNameToID["sepolia"] = ChainIDSepolia
+	ChainNameToID["base-sepolia"] = ChainIDBaseSepolia
+	ChainNameToID["arbitrum-sepolia"] = ChainIDArbitrumSepolia
+	ChainNameToID["op-sepolia"] = ChainIDOPSepolia
+	ChainNameToID["solana-devnet"] = ChainIDSolanaDevnet
+
+	// Testnet USDC addresses from Circle's sandbox deployment.
+	// WETH addresses from each chain's canonical wrapped ETH deployment.
+	TokenByChainAndSymbol[ChainIDSepolia] = map[string]TokenInfo{
+		"ETH":  {Address: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", Decimals: 18},
+		"WETH": {Address: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14", Decimals: 18},
+		"USDC": {Address: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", Decimals: 6},
+	}
+	TokenByChainAndSymbol[ChainIDBaseSepolia] = map[string]TokenInfo{
+		"ETH":  {Address: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", Decimals: 18},
+		"WETH": {Address: "0x4200000000000000000000000000000000000006", Decimals: 18},
+		"USDC": {Address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", Decimals: 6},
+	}
+	TokenByChainAndSymbol[ChainIDArbitrumSepolia] = map[string]TokenInfo{
+		"ETH":  {Address: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", Decimals: 18},
+		"WETH": {Address: "0x980B62Da83eFf3D4576C647993b0c1D7faf17c73", Decimals: 18},
+		"USDC": {Address: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d", Decimals: 6},
+	}
+	TokenByChainAndSymbol[ChainIDOPSepolia] = map[string]TokenInfo{
+		"ETH":  {Address: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", Decimals: 18},
+		"WETH": {Address: "0x4200000000000000000000000000000000000006", Decimals: 18},
+		"USDC": {Address: "0x5fd84259d66Cd46123540766Be93DFE6D43130D7", Decimals: 6},
+	}
+	// Solana devnet USDC mint (Circle's official devnet deployment).
+	TokenByChainAndSymbol[ChainIDSolanaDevnet] = map[string]TokenInfo{
+		"SOL":  {Address: "So11111111111111111111111111111111111111112", Decimals: 9},
+		"USDC": {Address: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU", Decimals: 6},
+	}
+
+	// Activate testnet support for individual adapters.
+	registerCCTPTestnetChains()
+	registerCanonicalTestnetChains()
+}
+
+// HopHasAcrossDeposit returns true if the hop's provider_data already contains deposit params.
+func HopHasAcrossDeposit(hop models.Hop) bool {
+	if len(hop.ProviderData) == 0 {
+		return false
+	}
+	var pd map[string]json.RawMessage
+	if err := json.Unmarshal(hop.ProviderData, &pd); err != nil {
+		return false
+	}
+	dep, ok := pd["deposit"]
+	return ok && len(dep) > 0 && string(dep) != "null"
+}
+
+// InjectAcrossDeposit returns a copy of the hop with deposit params merged into provider_data.
+func InjectAcrossDeposit(hop models.Hop, deposit *AcrossDepositParams) (models.Hop, error) {
+	var pd map[string]json.RawMessage
+	if len(hop.ProviderData) > 0 {
+		if err := json.Unmarshal(hop.ProviderData, &pd); err != nil {
+			return hop, err
+		}
+	} else {
+		pd = map[string]json.RawMessage{
+			"protocol": json.RawMessage(`"across_v3"`),
+		}
+	}
+	depBytes, err := json.Marshal(deposit)
+	if err != nil {
+		return hop, err
+	}
+	pd["deposit"] = depBytes
+	updated, err := json.Marshal(pd)
+	if err != nil {
+		return hop, err
+	}
+	hop.ProviderData = updated
+	return hop, nil
 }

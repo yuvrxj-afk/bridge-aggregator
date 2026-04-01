@@ -78,6 +78,14 @@ func resolveBridgeEndpoint(ep models.Endpoint) (resolvedBridgeInput, error) {
 	return out, nil
 }
 
+// isNativeETH returns true if addr is the canonical zero-address or EeeE sentinel used
+// to represent native ETH in bridge and DEX APIs.
+func isNativeETH(addr string) bool {
+	a := strings.ToLower(strings.TrimSpace(addr))
+	return a == "0x0000000000000000000000000000000000000000" ||
+		a == "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+}
+
 func resolveAmountBaseUnits(req models.QuoteRequest, decimals int) (string, error) {
 	if req.AmountBaseUnits != "" {
 		return req.AmountBaseUnits, nil

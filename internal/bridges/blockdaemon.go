@@ -15,9 +15,10 @@ type BlockdaemonAdapter struct {
 }
 
 // ID returns the bridge identifier for execute validation.
-func (b BlockdaemonAdapter) ID() string {
-	return "blockdaemon"
-}
+func (b BlockdaemonAdapter) ID() string { return "blockdaemon" }
+
+// Tier returns TierDegraded — Blockdaemon is functional but may return incomplete tx data.
+func (b BlockdaemonAdapter) Tier() models.AdapterTier { return models.TierDegraded }
 
 // GetQuote returns the best bridge quote from Blockdaemon's aggregator (Squid, Stargate, AllBridge, etc.).
 func (b BlockdaemonAdapter) GetQuote(ctx context.Context, req models.QuoteRequest) (*models.Route, error) {

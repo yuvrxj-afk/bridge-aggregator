@@ -57,7 +57,7 @@ func NewStargateClient(baseURL string, apiKey string) *StargateClient {
 		BaseURL: strings.TrimSuffix(baseURL, "/"),
 		APIKey:  apiKey,
 		HTTPClient: &http.Client{
-			Timeout: 15 * time.Second,
+			Timeout: 5 * time.Second,
 		},
 	}
 }
@@ -82,23 +82,44 @@ type layerZeroQuoteResponse struct {
 			Message string `json:"message"`
 		} `json:"issues"`
 	} `json:"error"`
-	Quotes []struct {
-		ID          string `json:"id"`
-		SrcAmount   string `json:"srcAmount"`
-		DstAmount   string `json:"dstAmount"`
-		DstAmountMin string `json:"dstAmountMin"`
-		FeeUsd      string `json:"feeUsd"`
-		FeePercent  string `json:"feePercent"`
-		Duration    *struct {
-			Estimated string `json:"estimated"` // milliseconds
-		} `json:"duration"`
-		Fees []struct {
-			ChainKey   string `json:"chainKey"`
-			Type       string `json:"type"`
-			Amount     string `json:"amount"`
-			Address    string `json:"address"`
-		} `json:"fees"`
-	} `json:"quotes"`
+	Quotes []layerZeroQuote `json:"quotes"`
+}
+
+type layerZeroQuote struct {
+	ID           string `json:"id"`
+	SrcAmount    string `json:"srcAmount"`
+	DstAmount    string `json:"dstAmount"`
+	DstAmountMin string `json:"dstAmountMin"`
+	FeeUsd       string `json:"feeUsd"`
+	FeePercent   string `json:"feePercent"`
+	Duration     *struct {
+		Estimated string `json:"estimated"` // milliseconds
+	} `json:"duration"`
+	Fees []struct {
+		ChainKey string `json:"chainKey"`
+		Type     string `json:"type"`
+		Amount   string `json:"amount"`
+		Address  string `json:"address"`
+	} `json:"fees"`
+	UserSteps []layerZeroUserStep `json:"userSteps"`
+}
+
+// layerZeroUserStep is a single execution step returned by the VT API.
+type layerZeroUserStep struct {
+	Type          string `json:"type"`        // "TRANSACTION" or "SIGNATURE"
+	Description   string `json:"description"` // "approve", "bridge"
+	ChainKey      string `json:"chainKey"`
+	ChainType     string `json:"chainType"` // "EVM", "SOLANA"
+	SignerAddress string `json:"signerAddress"`
+	Transaction   *struct {
+		Encoded struct {
+			To      string `json:"to"`
+			Data    string `json:"data"`
+			Value   string `json:"value"`
+			ChainID int    `json:"chainId"`
+			From    string `json:"from"`
+		} `json:"encoded"`
+	} `json:"transaction"`
 }
 
 // StargateQuoteResult holds the parsed quote for our aggregator.
@@ -202,4 +223,100 @@ func (c *StargateClient) GetQuote(ctx context.Context, amountSmallestUnits, srcT
 	}
 
 	return result, nil
+}
+
+// StargateTransactionStep is a pre-built transaction step ready for client-side execution.
+type StargateTransactionStep struct {
+	StepType string // "approve" or "bridge"
+	To       string
+	Data     string
+	Value    string
+	ChainID  int
+}
+
+// GetTransactionSteps calls POST /v1/quotes with real wallet addresses and returns
+// pre-built, ready-to-sign transaction steps. The VT API returns approve + bridge
+// steps with fully encoded calldata.
+func (c *StargateClient) GetTransactionSteps(ctx context.Context, amount, srcToken, dstToken, srcChainKey, dstChainKey, srcWallet, dstWallet string) ([]StargateTransactionStep, error) {
+	body := layerZeroQuoteRequest{
+		SrcChainKey:      srcChainKey,
+		DstChainKey:      dstChainKey,
+		SrcTokenAddress:  srcToken,
+		DstTokenAddress:  dstToken,
+		SrcWalletAddress: srcWallet,
+		DstWalletAddress: dstWallet,
+		Amount:           amount,
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("stargate tx request: %w", err)
+	}
+
+	u := c.BaseURL + "/quotes"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if c.APIKey != "" {
+		req.Header.Set("x-api-key", c.APIKey)
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("stargate tx: %s", shortHTTPError(resp.StatusCode, respBody))
+	}
+
+	var data layerZeroQuoteResponse
+	if err := json.Unmarshal(respBody, &data); err != nil {
+		return nil, fmt.Errorf("stargate tx decode: %w", err)
+	}
+	if data.Error != nil {
+		msg := data.Error.Message
+		if len(data.Error.Issues) > 0 {
+			msg += ": " + data.Error.Issues[0].Message
+		}
+		return nil, fmt.Errorf("stargate tx: %s", msg)
+	}
+	if len(data.Quotes) == 0 {
+		return nil, fmt.Errorf("stargate tx: no quotes returned for execution")
+	}
+
+	q := data.Quotes[0]
+	if len(q.UserSteps) == 0 {
+		return nil, fmt.Errorf("stargate tx: quote has no userSteps (execution not available)")
+	}
+
+	var steps []StargateTransactionStep
+	for _, us := range q.UserSteps {
+		if us.Type != "TRANSACTION" || us.Transaction == nil {
+			continue
+		}
+		stepType := "bridge"
+		if strings.EqualFold(us.Description, "approve") {
+			stepType = "approve"
+		}
+		steps = append(steps, StargateTransactionStep{
+			StepType: stepType,
+			To:       us.Transaction.Encoded.To,
+			Data:     us.Transaction.Encoded.Data,
+			Value:    us.Transaction.Encoded.Value,
+			ChainID:  us.Transaction.Encoded.ChainID,
+		})
+	}
+
+	if len(steps) == 0 {
+		return nil, fmt.Errorf("stargate tx: no executable steps in quote response")
+	}
+	return steps, nil
 }
