@@ -16,8 +16,8 @@ COPY apps/web ./apps/web
 ARG VITE_WALLETCONNECT_PROJECT_ID=
 ENV VITE_WALLETCONNECT_PROJECT_ID=$VITE_WALLETCONNECT_PROJECT_ID
 
-# ✅ FIXED BUILD
-RUN bun --cwd apps/web run build
+# Build explicitly (no script indirection) and assert output folder exists.
+RUN cd apps/web && bunx tsc -b && bunx vite build && test -d dist
 
 # ── Runtime ─────────────────────────────────────────────
 FROM nginx:1.27-alpine
