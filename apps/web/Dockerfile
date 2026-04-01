@@ -23,11 +23,18 @@ RUN bun run build:web
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM nginx:1.27-alpine
 
+# Install gettext for envsubst (needed for nginx config templating).
+RUN apk add --no-cache gettext
+
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
 
-# SPA routing + API proxy to backend services.
-COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
+# nginx.conf uses ${API_UPSTREAM} and ${API_TESTNET_UPSTREAM} placeholders.
+# Defaults match docker-compose service names; override for other environments.
+COPY apps/web/nginx.conf /etc/nginx/templates/default.conf.template
+ENV API_UPSTREAM=api:8080
+ENV API_TESTNET_UPSTREAM=api-testnet:8080
 
 EXPOSE 80
 
-CMD ["nginx", "-g", "daemon off;"]
+# envsubst substitutes only the two upstream vars — nginx's own $uri, $host, etc. are preserved.
+CMD ["/bin/sh", "-c", "envsubst '${API_UPSTREAM} ${API_TESTNET_UPSTREAM}' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
