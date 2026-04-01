@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bridge-aggregator-db
+    environment:
+      POSTGRES_USER: bridge
+      POSTGRES_PASSWORD: bridge123
+      POSTGRES_DB: bridge_aggregator
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bridge"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - NETWORK=${NETWORK:-mainnet}
+      - DATABASE_URL=postgresql://bridge:bridge123@postgres:5432/bridge_aggregator?sslmode=disable
+      - BLOCKDAEMON_API_KEY=${BLOCKDAEMON_API_KEY:-}
+      - ACROSS_DEPOSITOR=${ACROSS_DEPOSITOR:-}
+      - RPC_URL=${RPC_URL:-}
+      - ALLOWED_ORIGIN=${ALLOWED_ORIGIN:-*}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Note: distroless has no shell — health check is done at the orchestrator level.
+    # Verify via: curl -f http://localhost:8080/health
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8080}
+        VITE_WALLETCONNECT_PROJECT_ID: ${VITE_WALLETCONNECT_PROJECT_ID:-}
+        VITE_NETWORK: ${VITE_NETWORK:-mainnet}
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
