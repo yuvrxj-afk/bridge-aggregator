@@ -115,13 +115,10 @@ const TESTNET_TOKENS: Record<number, Token[]> = {
   ],
 };
 
-const isTestnet = import.meta.env.VITE_NETWORK === "testnet";
-
-// Merge testnet entries when VITE_NETWORK=testnet. Mainnet entries are always present.
-if (isTestnet) {
-  CHAINS.push(...TESTNET_CHAINS);
-  Object.assign(TOKENS, TESTNET_TOKENS);
-}
+// Always register testnet chains — the runtime toggle needs them regardless of build-time VITE_NETWORK.
+// VITE_NETWORK only controls the default scope, not which chains are available.
+CHAINS.push(...TESTNET_CHAINS);
+Object.assign(TOKENS, TESTNET_TOKENS);
 
 export function getChain(id: number): Chain | undefined {
   return CHAINS.find((c) => c.id === id);

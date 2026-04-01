@@ -179,7 +179,19 @@ export interface LiFiBuildResponse {
 
 // ── Fetch helpers ─────────────────────────────────────────────────────────────
 
-const BASE = "/api/v1";
+// In production: VITE_API_URL = mainnet backend, VITE_API_URL_TESTNET = testnet backend.
+// In dev: mainnet uses the Vite proxy at /api (→ localhost:8080),
+//         testnet uses /api/testnet (→ localhost:8081, rewritten to /api by Vite).
+const MAINNET_BASE = (import.meta.env.VITE_API_URL ?? "") + "/api/v1";
+const TESTNET_BASE = import.meta.env.VITE_API_URL_TESTNET
+  ? import.meta.env.VITE_API_URL_TESTNET + "/api/v1"
+  : "/api/testnet/v1";
+
+function getBase(): string {
+  if (typeof window === "undefined") return MAINNET_BASE;
+  const scope = window.localStorage.getItem("chain_scope") ?? "mainnet";
+  return scope === "testnet" ? TESTNET_BASE : MAINNET_BASE;
+}
 
 // BridgeError carries the structured error_type and error_code from the backend,
 // allowing the frontend to classify errors for appropriate recovery UX.
@@ -197,7 +209,7 @@ export class BridgeError extends Error {
 type ApiErrorBody = { error?: { message?: string; error_type?: string; error_code?: string } };
 
 async function apiFetch<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${getBase()}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -215,7 +227,7 @@ async function apiFetch<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
+  const res = await fetch(`${getBase()}${path}`);
   const data = await res.json() as ApiErrorBody;
   if (!res.ok) {
     const err = data.error ?? {};
@@ -236,7 +248,7 @@ export function fetchQuote(req: QuoteRequest): Promise<QuoteResponse> {
 // Each yielded Route is ready to display — the generator ends when the server
 // sends "event: done" or closes the connection.
 export async function* fetchQuoteStream(req: QuoteRequest, signal?: AbortSignal): AsyncGenerator<Route> {
-  const res = await fetch(`${BASE}/quote/stream`, {
+  const res = await fetch(`${getBase()}/quote/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
@@ -300,4 +312,60 @@ export function fetchAdapterHealth(): Promise<AdapterHealthResponse> {
 
 export function fetchTransactionStatus(txHash: string): Promise<{ status: string; progress: number }> {
   return apiGet(`/status/${txHash}`);
+}
+
+// ── Operation lifecycle ───────────────────────────────────────────────────────
+
+export interface OperationRecord {
+  operation_id: string;
+  status: string;
+  client_reference_id?: string;
+}
+
+export interface OperationEvent {
+  id: number;
+  event_type: string;
+  from_status: string;
+  to_status: string;
+  tx_hash?: string;
+  created_at: string;
+}
+
+export interface OperationDetail {
+  operation_id: string;
+  route: Route;
+  status: string;
+  tx_hash?: string;
+  created_at: string;
+  updated_at: string;
+  events?: OperationEvent[];
+}
+
+// List recent operations (newest-first).
+export function fetchOperations(limit = 50, scope?: string): Promise<{ operations: OperationDetail[] }> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (scope) params.set("scope", scope);
+  return apiGet(`/operations?${params}`);
+}
+
+// Register an intent to execute a route — called before wallet prompt.
+export function createOperation(route: Route, idempotencyKey?: string): Promise<OperationRecord> {
+  return apiFetch("/execute", {
+    route,
+    ...(idempotencyKey && { idempotency_key: idempotencyKey }),
+  });
+}
+
+// Update operation status after on-chain confirmation.
+export function patchOperationStatus(operationId: string, status: string, txHash?: string): Promise<void> {
+  return fetch(`${getBase()}/operations/${operationId}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status, ...(txHash && { tx_hash: txHash }) }),
+  }).then(() => undefined);
+}
+
+// Fetch a single operation with its events.
+export function fetchOperation(operationId: string): Promise<OperationDetail> {
+  return apiGet(`/operations/${operationId}`);
 }

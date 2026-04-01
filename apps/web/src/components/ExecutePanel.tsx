@@ -14,7 +14,10 @@ import {
   fetchBuildTransaction,
   fetchStepTransaction,
   fetchTransactionStatus,
+  createOperation,
+  patchOperationStatus,
 } from "../api";
+import { savePendingClaim } from "../lib/pendingClaims";
 import { TokenIcon } from "./TokenIcon";
 import { ChainIcon } from "./ChainIcon";
 import { TOKENS } from "../tokens";
@@ -412,6 +415,7 @@ type ExecPhase =
   | "executing"               // sending the main bridge/swap tx
   | "bridge_submitted"        // bridge deposit done; waiting for settlement before dest swap
   | "cctp_waiting_attestation" // CCTP: waiting for Circle Iris attestation after depositForBurn
+  | "cctp_claim_saved"         // CCTP: burn confirmed, claim saved — user can come back later
   | "cctp_claiming"            // CCTP: submitting receiveMessage on destination chain
   | "done"
   | "error_retryable"         // network blip, rate limit — retry button
@@ -427,6 +431,7 @@ const PHASE_LABELS: Record<ExecPhase, string> = {
   executing:                    "Confirm bridge in wallet…",
   bridge_submitted:             "Bridge submitted — waiting for settlement",
   cctp_waiting_attestation:     "Waiting for Circle attestation…",
+  cctp_claim_saved:             "Burn confirmed — claim saved",
   cctp_claiming:                "Confirm claim in wallet…",
   done:                         "Transaction submitted",
   error_retryable:              "",
@@ -527,6 +532,8 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
   // CCTP-specific state
   const [cctpPollCount, setCctpPollCount] = useState(0);
   const [cctpClaimDone, setCctpClaimDone] = useState(false);
+  // Operation tracking — populated after createOperation succeeds
+  const [operationId, setOperationId] = useState("");
 
   const srcHop = route.hops[0];
   const dstHop = route.hops[route.hops.length - 1];
@@ -590,7 +597,18 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
     setGasPrice(null);
     setCctpPollCount(0);
     setCctpClaimDone(false);
+    setOperationId("");
   }, [route.route_id]);
+
+  // Persist operation status to DB when execution completes or fails.
+  useEffect(() => {
+    if (!operationId) return;
+    if (phase === "done" && txHash) {
+      patchOperationStatus(operationId, "submitted", txHash).catch(() => undefined);
+    } else if (phase === "error_terminal" || phase === "error_requote") {
+      patchOperationStatus(operationId, "failed").catch(() => undefined);
+    }
+  }, [phase, txHash, operationId]);
 
   // ── Bridge settlement polling ─────────────────────────────────────────────
   // After a bridge deposit, poll the destination chain every 5s until funds arrive.
@@ -682,6 +700,12 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
           );
         }
       }
+
+      // Register operation intent in the DB — best-effort, never blocks execution.
+      try {
+        const op = await createOperation(route);
+        setOperationId(op.operation_id);
+      } catch { /* DB may be unavailable — continue without tracking */ }
 
       if (canUseLiFi && !useMultiStep) {
         // ── LiFi Diamond path ──
@@ -812,9 +836,9 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
               setTxHash(hash);
 
               // CCTP: wait for depositForBurn receipt, extract MessageSent bytes,
-              // then poll Circle Iris until attestation is ready.
+              // then save the pending claim so the user can navigate away and
+              // return later to complete receiveMessage when attestation is ready.
               if (isCCTP) {
-                setCctpPollCount(0);
                 setPhase("cctp_waiting_attestation");
                 const receipt = await publicClient.waitForTransactionReceipt({ hash, retryCount: 60 });
                 const sentLog = receipt.logs.find(
@@ -826,11 +850,28 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
                   sentLog.data as `0x${string}`,
                 );
                 const messageHash = keccak256(messageBytes as `0x${string}`);
-                const attestation = await pollCCTPAttestation(messageHash, setCctpPollCount);
-                cctpClaimData = {
-                  messageBytes: messageBytes as `0x${string}`,
-                  attestation: attestation as `0x${string}`,
-                };
+
+                // Look ahead for the claim step to get the MessageTransmitter address.
+                const claimStep = allSteps.find(s => s.step_type === "claim");
+                savePendingClaim({
+                  id: crypto.randomUUID(),
+                  messageHash,
+                  messageBytes: messageBytes as string,
+                  claimContract: claimStep?.tx?.contract ?? "",
+                  claimChainId: claimStep?.tx?.chain_id ?? dstChainId,
+                  srcTxHash: hash,
+                  srcChainId,
+                  amount: srcHop.amount_in_base_units ?? "0",
+                  fromAsset: srcHop.from_asset,
+                  toAsset: dstHop.to_asset,
+                  fromChain: srcHop.from_chain,
+                  toChain: dstHop.to_chain,
+                  decimals: srcDec,
+                  savedAt: Date.now(),
+                });
+                setTxHash(hash);
+                setPhase("cctp_claim_saved");
+                return; // burn done — user claims later via the Pending Claims panel
               }
               continue;
             }
@@ -940,7 +981,8 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
   const isErrorPhase = phase === "error_retryable" || phase === "error_action_required" || phase === "error_requote" || phase === "error_terminal";
   const isActive = phase !== "idle" && phase !== "done" && !isErrorPhase
     && phase !== "bridge_submitted"
-    && phase !== "cctp_waiting_attestation";
+    && phase !== "cctp_waiting_attestation"
+    && phase !== "cctp_claim_saved";
   const needsChainSwitch = srcChainId !== 0 && currentChainId !== srcChainId;
 
   // Low-value L1 warning
@@ -1310,15 +1352,27 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
             <div className="flex items-center gap-2">
               <span className="animate-spin inline-block w-4 h-4 border-2 rounded-full shrink-0"
                 style={{ borderColor: "rgba(190,194,255,0.25)", borderTopColor: "#bec2ff" }} />
-              <span className="text-sm font-semibold" style={{ color: "#c6c5d8" }}>Waiting for Circle attestation</span>
+              <span className="text-sm font-semibold" style={{ color: "#c6c5d8" }}>Waiting for burn receipt…</span>
             </div>
             <p className="text-[11px] leading-relaxed" style={{ color: "#908fa1" }}>
-              USDC burn confirmed on-chain. Polling Circle&apos;s Iris API for attestation
-              {cctpPollCount > 0 ? ` (attempt ${cctpPollCount})` : ""}…
+              Confirming the USDC burn on-chain before saving your claim.
             </p>
-            <p className="text-[11px]" style={{ color: "rgba(144,143,161,0.60)" }}>
-              This takes ~2–5 minutes. Your funds are safe — the burn is irreversible only after attestation confirms.
+          </div>
+        )}
+
+        {phase === "cctp_claim_saved" && txHash && (
+          <div className="px-5 py-4 space-y-2" style={{ backgroundColor: "#1c1b1b", border: "1px solid rgba(190,194,255,0.20)" }}>
+            <div className="flex items-center gap-2">
+              <span className="w-5 h-5 flex items-center justify-center text-accent text-[11px] font-bold" style={{ border: "1px solid rgba(190,194,255,0.30)" }}>✓</span>
+              <span className="text-sm font-semibold" style={{ color: "#bec2ff" }}>Burn confirmed — claim saved</span>
+            </div>
+            <p className="text-[11px] leading-relaxed" style={{ color: "#908fa1" }}>
+              Your USDC claim is saved and will be ready in ~5–15 min. You can navigate away safely — a <strong style={{ color: "#c6c5d8" }}>Pending Claims</strong> banner will appear when the attestation is ready.
             </p>
+            <a href={explorerTx(srcChainId, txHash)} target="_blank" rel="noopener noreferrer"
+              className="text-[11px] font-mono text-accent hover:text-on-surface block">
+              {txHash.slice(0, 10)}…{txHash.slice(-6)} ↗
+            </a>
           </div>
         )}
 

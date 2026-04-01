@@ -42,7 +42,6 @@ import { useMemo } from "react";
 const appName = import.meta.env.VITE_APP_NAME || "TERMINAL.AGG";
 const walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || "YOUR_PROJECT_ID";
 const solanaRpc = import.meta.env.VITE_RPC_SOLANA || "https://api.mainnet-beta.solana.com";
-const isTestnet = import.meta.env.VITE_NETWORK === "testnet";
 
 function chainTransport(chainDefaultRpc: string, customRpc?: string) {
   if (customRpc) {

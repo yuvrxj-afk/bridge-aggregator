@@ -307,10 +307,10 @@ export function QuoteForm({
   const [slippageBps, setSlippageBps] = useState(50);
   const [customSlippage, setCustomSlippage] = useState("");
   const [chainScope, setChainScope] = useState<ChainScope>(() => {
-    if (typeof window === "undefined") return import.meta.env.VITE_NETWORK === "testnet" ? "testnet" : "mainnet";
+    if (typeof window === "undefined") return "mainnet";
     const stored = window.localStorage.getItem(CHAIN_SCOPE_STORAGE_KEY);
     if (stored === "mainnet" || stored === "testnet") return stored;
-    return import.meta.env.VITE_NETWORK === "testnet" ? "testnet" : "mainnet";
+    return "mainnet";
   });
   const streamAbort = useRef<AbortController | null>(null);
 
@@ -395,7 +395,10 @@ export function QuoteForm({
       const n = Number(
         formatUnits(BigInt(bestRoute.estimated_output_amount), dstToken.decimals),
       );
-      return n === 0 ? "" : n >= 1 ? n.toFixed(4) : n.toPrecision(4);
+      if (n === 0) return "";
+      if (n >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+      if (n >= 1)    return n.toFixed(4).replace(/\.?0+$/, "");
+      return n.toPrecision(4);
     } catch {
       return "";
     }
@@ -531,7 +534,10 @@ export function QuoteForm({
 
   const trimAmount = (v: string) => {
     if (!v.includes(".")) return v;
-    return v.replace(/(\.\d*?[1-9])0+$/u, "$1").replace(/\.0+$/u, "").replace(/\.$/u, "");
+    // Cap at 8 decimal places then strip trailing zeros.
+    const [int, dec] = v.split(".");
+    const capped = (int ?? "") + "." + (dec ?? "").slice(0, 8);
+    return capped.replace(/(\.\d*?[1-9])0+$/u, "$1").replace(/\.0+$/u, "").replace(/\.$/u, "");
   };
 
   const handleSetMax = useCallback(() => {

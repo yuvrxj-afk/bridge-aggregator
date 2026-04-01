@@ -7,6 +7,7 @@ import { QuoteForm } from "./components/QuoteForm";
 import { RouteCard } from "./components/RouteCard";
 import { QuoteSummaryCard } from "./components/QuoteSummaryCard";
 import { OperationsDashboard } from "./components/OperationsDashboard";
+import { PendingClaimsBanner } from "./components/PendingClaimsBanner";
 import { ExecutePage } from "./pages/ExecutePage";
 import { type Route as BridgeRoute } from "./api";
 import { VISIBLE_PROVIDERS } from "./config/providers";
@@ -15,10 +16,10 @@ type ChainScope = "mainnet" | "testnet";
 const CHAIN_SCOPE_STORAGE_KEY = "chain_scope";
 
 function readChainScope(): ChainScope {
-  if (typeof window === "undefined") return import.meta.env.VITE_NETWORK === "testnet" ? "testnet" : "mainnet";
+  if (typeof window === "undefined") return "mainnet";
   const stored = window.localStorage.getItem(CHAIN_SCOPE_STORAGE_KEY);
   if (stored === "mainnet" || stored === "testnet") return stored;
-  return import.meta.env.VITE_NETWORK === "testnet" ? "testnet" : "mainnet";
+  return "mainnet";
 }
 
 function writeChainScope(scope: ChainScope) {
@@ -398,8 +399,6 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
     isActive ? "text-[#e5e2e1]" : "text-[#c6c5d8] hover:text-[#e5e2e1]"
   }`;
 
-const isTestnet = import.meta.env.VITE_NETWORK === "testnet";
-
 const SCOPE_DEFAULT_CHAIN: Record<ChainScope, number> = {
   mainnet: 1,        // Ethereum
   testnet: 11155111, // Sepolia
@@ -463,13 +462,14 @@ function TerminalLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-screen bg-[#131313] text-white antialiased">
-      {isTestnet && (
+      {chainScope === "testnet" && (
         <div className="w-full bg-[#2a1f00] border-b border-[#ffb347]/30 px-4 py-1.5 text-center">
           <span className="text-[11px] font-mono uppercase tracking-widest text-[#ffb347]">
             TESTNET MODE — transactions use Sepolia / Base Sepolia / Arbitrum Sepolia / OP Sepolia · funds have no real value
           </span>
         </div>
       )}
+      <PendingClaimsBanner chainScope={chainScope} />
       <header className="sticky top-0 z-50 h-16 backdrop-blur bg-[#131313]/70 border-b border-[#2a2a2a] flex items-center">
         <div className="max-w-7xl mx-auto w-full px-6 flex items-center justify-between">
           <Link
@@ -484,7 +484,7 @@ function TerminalLayout({ children }: { children: ReactNode }) {
             <span className="text-lg font-black tracking-tighter text-[#C6C6C7] uppercase">
               T / AGG
             </span>
-            {isTestnet && (
+            {chainScope === "testnet" && (
               <span className="ml-1 px-1.5 py-0.5 text-[9px] font-mono font-bold uppercase tracking-widest bg-[#ffb347]/15 text-[#ffb347] border border-[#ffb347]/40">
                 TESTNET
               </span>

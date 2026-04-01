@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { ChainIcon } from "./ChainIcon";
-import { fetchAdapterHealth, type AdapterHealth } from "../api";
+import { fetchAdapterHealth, fetchOperations, type AdapterHealth, type OperationDetail } from "../api";
+import { formatUnits } from "viem";
 
 // ── Design tokens ────────────────────────────────────────────────────────────
 
@@ -19,122 +20,9 @@ const C = {
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type OpStatus = "active" | "completed" | "failed";
+type TabKey = "active" | "past" | "failed";
 
-interface TimelineStep {
-  label: string;
-  timestamp: string;
-  status: "done" | "pending" | "failed";
-}
-
-interface Operation {
-  id: string;
-  status: OpStatus;
-  fromChain: string;
-  fromChainId: number;
-  fromToken: string;
-  fromAmount: string;
-  toChain: string;
-  toChainId: number;
-  toToken: string;
-  toAmount: string;
-  bridge: string;
-  timeline: TimelineStep[];
-  error?: string;
-  explorerUrl: string;
-}
-
-interface LogEntry {
-  timestamp: string;
-  level: "SYS" | "INF" | "ERR";
-  message: string;
-}
-
-// ── Mock data ────────────────────────────────────────────────────────────────
-
-const MOCK_OPS: Operation[] = [
-  {
-    id: "0xa4f8c91d3e27b056f3a2c8d1e9b74f0621c8ed3a",
-    status: "failed",
-    fromChain: "Ethereum",
-    fromChainId: 1,
-    fromToken: "USDC",
-    fromAmount: "2,500.00",
-    toChain: "Arbitrum",
-    toChainId: 42161,
-    toToken: "USDC",
-    toAmount: "2,497.80",
-    bridge: "Across V3",
-    timeline: [
-      { label: "Quote accepted",   timestamp: "14:32:01", status: "done" },
-      { label: "Approval sent",    timestamp: "14:32:18", status: "done" },
-      { label: "Deposit tx",       timestamp: "14:32:45", status: "done" },
-      { label: "Relay fill",       timestamp: "14:33:12", status: "failed" },
-    ],
-    error: "RelayerFillTimeout: no relayer picked up the deposit within the SLA window (120 s). Deposit hash 0xa4f8…ed3a is still claimable on-chain.",
-    explorerUrl: "https://etherscan.io/tx/0xa4f8c91d",
-  },
-  {
-    id: "0x7b2e0f15d84ca963e1fd08723bc5a19e47d6f0b2",
-    status: "active",
-    fromChain: "Polygon",
-    fromChainId: 137,
-    fromToken: "USDT",
-    fromAmount: "10,000.00",
-    toChain: "Ethereum",
-    toChainId: 1,
-    toToken: "USDT",
-    toAmount: "9,988.50",
-    bridge: "Stargate",
-    timeline: [
-      { label: "Quote accepted",   timestamp: "14:40:05", status: "done" },
-      { label: "Approval sent",    timestamp: "14:40:22", status: "done" },
-      { label: "Deposit tx",       timestamp: "14:40:58", status: "done" },
-      { label: "Awaiting finality", timestamp: "—",       status: "pending" },
-    ],
-    explorerUrl: "https://polygonscan.com/tx/0x7b2e0f15",
-  },
-  {
-    id: "0x1c9d4a38f62eb071d5fc09284eab7c3f85a01d6e",
-    status: "completed",
-    fromChain: "Arbitrum",
-    fromChainId: 42161,
-    fromToken: "ETH",
-    fromAmount: "1.5000",
-    toChain: "Polygon",
-    toChainId: 137,
-    toToken: "ETH",
-    toAmount: "1.4985",
-    bridge: "Across V3",
-    timeline: [
-      { label: "Quote accepted",   timestamp: "13:15:40", status: "done" },
-      { label: "Deposit tx",       timestamp: "13:15:58", status: "done" },
-      { label: "Relay fill",       timestamp: "13:16:22", status: "done" },
-      { label: "Confirmed",        timestamp: "13:16:44", status: "done" },
-    ],
-    explorerUrl: "https://arbiscan.io/tx/0x1c9d4a38",
-  },
-];
-
-const MOCK_LOGS: LogEntry[] = [
-  { timestamp: "14:40:58", level: "INF", message: "deposit tx confirmed  hash=0x7b2e…f0b2  chain=polygon  block=62831044" },
-  { timestamp: "14:40:55", level: "SYS", message: "waiting for receipt   hash=0x7b2e…f0b2  confirmations=1" },
-  { timestamp: "14:40:22", level: "INF", message: "approval tx sent     spender=0x2967…3a1f  token=USDT  chain=polygon" },
-  { timestamp: "14:40:06", level: "SYS", message: "quote locked         op=0x7b2e…f0b2  bridge=stargate  ttl=90s" },
-  { timestamp: "14:33:12", level: "ERR", message: "relay fill timeout   op=0xa4f8…ed3a  elapsed=120s  bridge=across_v3" },
-  { timestamp: "14:32:45", level: "INF", message: "deposit tx confirmed  hash=0xa4f8…ed3a  chain=ethereum  block=19482011" },
-  { timestamp: "14:32:18", level: "INF", message: "approval tx sent     spender=0x5c7B…e120  token=USDC  chain=ethereum" },
-  { timestamp: "14:32:01", level: "SYS", message: "quote locked         op=0xa4f8…ed3a  bridge=across_v3  ttl=120s" },
-  { timestamp: "13:16:44", level: "INF", message: "bridge complete      op=0x1c9d…1d6e  output=1.4985 ETH  dest=polygon" },
-  { timestamp: "13:16:22", level: "INF", message: "relay fill confirmed hash=0x1c9d…1d6e  chain=polygon  block=62830188" },
-  { timestamp: "13:15:58", level: "INF", message: "deposit tx confirmed  hash=0x1c9d…1d6e  chain=arbitrum  block=198402155" },
-  { timestamp: "13:15:40", level: "SYS", message: "quote locked         op=0x1c9d…1d6e  bridge=across_v3  ttl=120s" },
-];
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-const TAB_KEYS = ["active", "past", "failed"] as const;
-type TabKey = (typeof TAB_KEYS)[number];
+const TAB_KEYS: TabKey[] = ["active", "past", "failed"];
 
 const TAB_LABELS: Record<TabKey, string> = {
   active: "Active",
@@ -142,32 +30,66 @@ const TAB_LABELS: Record<TabKey, string> = {
   failed: "Failed",
 };
 
-function statusColor(s: OpStatus) {
-  if (s === "failed")    return C.err;
-  if (s === "active")    return C.amber;
-  return C.green;
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function dbStatusToTab(status: string): TabKey {
+  if (status === "pending" || status === "submitted") return "active";
+  if (status === "failed") return "failed";
+  return "past";
 }
 
-function statusLabel(s: OpStatus) {
-  if (s === "failed")    return "Failed";
-  if (s === "active")    return "Pending";
-  return "Completed";
+function statusLabel(status: string): string {
+  if (status === "pending")   return "Pending";
+  if (status === "submitted") return "Submitted";
+  if (status === "completed") return "Completed";
+  if (status === "failed")    return "Failed";
+  return status;
 }
 
-function filterOps(tab: TabKey): Operation[] {
-  if (tab === "active") return MOCK_OPS.filter(o => o.status === "active");
-  if (tab === "failed") return MOCK_OPS.filter(o => o.status === "failed");
-  return MOCK_OPS.filter(o => o.status === "completed");
+function statusColor(status: string): string {
+  if (status === "failed")    return C.err;
+  if (status === "completed") return C.green;
+  return C.amber;
 }
 
 function truncateId(id: string) {
-  return id.length > 16 ? `${id.slice(0, 10)}…${id.slice(-6)}` : id;
+  return id.length > 18 ? `${id.slice(0, 10)}…${id.slice(-6)}` : id;
 }
 
-function logLevelColor(lvl: LogEntry["level"]) {
-  if (lvl === "ERR") return C.err;
-  if (lvl === "INF") return C.accent;
-  return C.onSurfaceVariant;
+function formatAmount(amountBaseUnits: string, decimals: number): string {
+  try {
+    const n = Number(formatUnits(BigInt(amountBaseUnits), decimals));
+    if (n === 0) return "0";
+    if (n >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    if (n >= 1)    return n.toFixed(4).replace(/\.?0+$/, "");
+    return n.toPrecision(4);
+  } catch {
+    return amountBaseUnits;
+  }
+}
+
+function explorerUrl(chainId: number, txHash: string): string {
+  const explorers: Record<number, string> = {
+    1:         "https://etherscan.io/tx/",
+    10:        "https://optimistic.etherscan.io/tx/",
+    137:       "https://polygonscan.com/tx/",
+    42161:     "https://arbiscan.io/tx/",
+    8453:      "https://basescan.org/tx/",
+    11155111:  "https://sepolia.etherscan.io/tx/",
+    84532:     "https://sepolia.basescan.org/tx/",
+    421614:    "https://sepolia.arbiscan.io/tx/",
+    11155420:  "https://sepolia-optimism.etherscan.io/tx/",
+  };
+  const base = explorers[chainId] ?? `https://blockscan.com/tx/`;
+  return base + txHash;
+}
+
+function relativeTime(dateStr: string): string {
+  const diff = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (diff < 60)   return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
 }
 
 function statusDotColor(s: AdapterHealth["status"]) {
@@ -178,183 +100,128 @@ function statusDotColor(s: AdapterHealth["status"]) {
 
 // ── Sub-components ───────────────────────────────────────────────────────────
 
-function StatusBadge({ status }: { status: OpStatus }) {
-  const bg = `${statusColor(status)}18`;
+function StatusBadge({ status }: { status: string }) {
+  const color = statusColor(status);
+  const bg = `${color}18`;
   return (
     <span
       className="text-[10px] font-semibold uppercase tracking-wider px-2.5 py-0.5 rounded"
-      style={{ color: statusColor(status), backgroundColor: bg }}
+      style={{ color, backgroundColor: bg }}
     >
       {statusLabel(status)}
     </span>
   );
 }
 
-function TimelineStepper({ steps }: { steps: TimelineStep[] }) {
-  return (
-    <div className="flex flex-col gap-2 mt-3">
-      {steps.map((step, i) => {
-        const dotColor =
-          step.status === "done"    ? C.green :
-          step.status === "failed"  ? C.err :
-          C.onSurfaceVariant;
-        const isLast = i === steps.length - 1;
+function OperationCard({ op }: { op: OperationDetail }) {
+  const firstHop = op.route.hops[0];
+  const lastHop  = op.route.hops[op.route.hops.length - 1];
+  if (!firstHop || !lastHop) return null;
 
-        return (
-          <div key={i} className="flex items-start gap-3">
-            {/* vertical track */}
-            <div className="flex flex-col items-center">
-              <div
-                className="w-2 h-2 rounded-full shrink-0 mt-[3px]"
-                style={{ backgroundColor: dotColor }}
-              />
-              {!isLast && (
-                <div className="w-px flex-1 min-h-[16px]" style={{ backgroundColor: C.surfaceContainerHigh }} />
-              )}
-            </div>
+  const fromAmount = formatAmount(firstHop.amount_in_base_units, 6);
+  const toAmount   = formatAmount(op.route.estimated_output_amount, 6);
+  const bridgeNames = [...new Set(op.route.hops.map(h => h.bridge_id))].join(" + ");
 
-            {/* label + timestamp */}
-            <div className="flex items-baseline justify-between flex-1 gap-4 pb-1">
-              <span
-                className="text-xs"
-                style={{ color: step.status === "failed" ? C.err : C.onSurface }}
-              >
-                {step.label}
-              </span>
-              <span className="text-[10px] font-mono tabular-nums" style={{ color: C.onSurfaceVariant }}>
-                {step.timestamp}
-              </span>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
+  const events = op.events ?? [];
+  const timeline = events.slice().reverse().map(ev => ({
+    label: ev.event_type === "created" ? "Operation created" :
+           ev.event_type === "status_transition" ? `${ev.from_status} → ${ev.to_status}` :
+           ev.event_type,
+    timestamp: relativeTime(ev.created_at),
+    status: (ev.to_status === "failed" ? "failed" : "done") as "done" | "failed" | "pending",
+  }));
 
-function OperationCard({ op }: { op: Operation }) {
+  const txUrl = op.tx_hash
+    ? explorerUrl(firstHop.from_chain === "ethereum" ? 1 : firstHop.from_chain === "sepolia" ? 11155111 : 0, op.tx_hash)
+    : null;
+
   return (
     <div className="rounded" style={{ backgroundColor: C.surfaceContainer }}>
       <div className="p-5 flex flex-col gap-3">
-        {/* top row: badge + id */}
+        {/* top row: badge + id + time */}
         <div className="flex items-center justify-between gap-3">
           <StatusBadge status={op.status} />
-          <span
-            className="text-xs font-mono tabular-nums truncate"
-            style={{ color: C.onSurfaceVariant }}
-            title={op.id}
-          >
-            {truncateId(op.id)}
-          </span>
+          <div className="flex items-center gap-3 min-w-0">
+            <span
+              className="text-xs font-mono tabular-nums truncate"
+              style={{ color: C.onSurfaceVariant }}
+              title={op.operation_id}
+            >
+              {truncateId(op.operation_id)}
+            </span>
+            <span className="text-[10px] font-mono shrink-0" style={{ color: C.onSurfaceVariant }}>
+              {relativeTime(op.created_at)}
+            </span>
+          </div>
         </div>
 
         {/* route summary */}
         <div className="flex items-center gap-2 flex-wrap">
           <div className="flex items-center gap-1.5">
-            <ChainIcon chainId={op.fromChainId} size={14} />
+            <ChainIcon chainId={firstHop.from_chain === "ethereum" ? 1 : firstHop.from_chain === "sepolia" ? 11155111 : 0} size={14} />
             <span className="text-sm font-medium" style={{ color: C.onSurface }}>
-              {op.fromAmount} {op.fromToken}
+              {fromAmount} {firstHop.from_asset}
             </span>
-            <span className="text-[10px]" style={{ color: C.onSurfaceVariant }}>{op.fromChain}</span>
+            <span className="text-[10px]" style={{ color: C.onSurfaceVariant }}>{firstHop.from_chain}</span>
           </div>
 
           <span className="text-xs" style={{ color: C.onSurfaceVariant }}>→</span>
 
           <div className="flex items-center gap-1.5">
-            <ChainIcon chainId={op.toChainId} size={14} />
+            <ChainIcon chainId={lastHop.to_chain === "ethereum" ? 1 : lastHop.to_chain === "base" ? 8453 : lastHop.to_chain === "base_sepolia" ? 84532 : 0} size={14} />
             <span className="text-sm font-medium" style={{ color: C.onSurface }}>
-              {op.toAmount} {op.toToken}
+              {toAmount} {lastHop.to_asset}
             </span>
-            <span className="text-[10px]" style={{ color: C.onSurfaceVariant }}>{op.toChain}</span>
+            <span className="text-[10px]" style={{ color: C.onSurfaceVariant }}>{lastHop.to_chain}</span>
           </div>
 
           <span
             className="ml-auto text-[10px] uppercase tracking-wider font-medium px-2 py-0.5 rounded"
             style={{ color: C.accent, backgroundColor: `${C.accent}14` }}
           >
-            {op.bridge}
+            {bridgeNames}
           </span>
         </div>
 
-        {/* timeline */}
-        <TimelineStepper steps={op.timeline} />
-
-        {/* error callout */}
-        {op.error && (
-          <div className="rounded px-3.5 py-2.5 text-xs leading-relaxed" style={{ backgroundColor: `${C.err}10`, color: C.err }}>
-            {op.error}
+        {/* timeline from DB events */}
+        {timeline.length > 0 && (
+          <div className="flex flex-col gap-2 mt-1">
+            {timeline.map((step, i) => {
+              const dotColor =
+                step.status === "done"   ? C.green :
+                step.status === "failed" ? C.err :
+                C.onSurfaceVariant;
+              const isLast = i === timeline.length - 1;
+              return (
+                <div key={i} className="flex items-start gap-3">
+                  <div className="flex flex-col items-center">
+                    <div className="w-2 h-2 rounded-full shrink-0 mt-[3px]" style={{ backgroundColor: dotColor }} />
+                    {!isLast && <div className="w-px flex-1 min-h-[16px]" style={{ backgroundColor: C.surfaceContainerHigh }} />}
+                  </div>
+                  <div className="flex items-baseline justify-between flex-1 gap-4 pb-1">
+                    <span className="text-xs" style={{ color: step.status === "failed" ? C.err : C.onSurface }}>{step.label}</span>
+                    <span className="text-[10px] font-mono tabular-nums" style={{ color: C.onSurfaceVariant }}>{step.timestamp}</span>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
 
         {/* action buttons */}
-        <div className="flex items-center gap-2 mt-1">
-          {op.status === "failed" && (
-            <>
-              <ActionButton label="Retry from Step" accent />
-              <ActionButton label="Re-quote" />
-            </>
-          )}
-          <ActionButton label="Open Explorer" href={op.explorerUrl} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ActionButton({ label, accent, href }: { label: string; accent?: boolean; href?: string }) {
-  const style: React.CSSProperties = accent
-    ? { backgroundColor: C.accent, color: C.surfaceContainerLow }
-    : { backgroundColor: C.surfaceContainerHigh, color: C.onSurfaceVariant };
-
-  const className = "text-[11px] font-semibold px-3 py-1.5 rounded cursor-pointer transition-opacity hover:opacity-80";
-
-  if (href) {
-    return (
-      <a href={href} target="_blank" rel="noopener noreferrer" className={className} style={style}>
-        {label}
-      </a>
-    );
-  }
-  return (
-    <button className={className} style={style}>
-      {label}
-    </button>
-  );
-}
-
-function TerminalLogs({ logs }: { logs: LogEntry[] }) {
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [logs.length]);
-
-  return (
-    <div
-      className="rounded overflow-hidden flex flex-col"
-      style={{ backgroundColor: C.surfaceContainerLow }}
-    >
-      <div className="px-4 py-2.5" style={{ backgroundColor: C.surfaceContainer }}>
-        <span className="text-xs font-semibold tracking-wide" style={{ color: C.onSurface }}>
-          Live Terminal Logs
-        </span>
-      </div>
-
-      <div className="h-[280px] overflow-y-auto px-4 py-3 flex flex-col gap-1 font-mono text-[11px] leading-relaxed">
-        {logs.map((entry, i) => (
-          <div key={i} className="flex gap-2">
-            <span className="tabular-nums shrink-0" style={{ color: C.onSurfaceVariant }}>
-              {entry.timestamp}
-            </span>
-            <span className="font-semibold shrink-0" style={{ color: logLevelColor(entry.level) }}>
-              [{entry.level}]
-            </span>
-            <span style={{ color: entry.level === "ERR" ? C.err : C.onSurface }}>
-              {entry.message}
-            </span>
+        {txUrl && (
+          <div className="flex items-center gap-2 mt-1">
+            <a
+              href={txUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[11px] font-semibold px-3 py-1.5 rounded transition-opacity hover:opacity-80"
+              style={{ backgroundColor: C.surfaceContainerHigh, color: C.onSurfaceVariant }}
+            >
+              Open Explorer
+            </a>
           </div>
-        ))}
-        <div ref={bottomRef} />
+        )}
       </div>
     </div>
   );
@@ -372,55 +239,164 @@ function AdapterHealthPanel({
   const bridges = adapters.filter(a => a.kind === "bridge");
   const dexes = adapters.filter(a => a.kind === "dex");
 
-  const renderRows = (rows: AdapterHealth[]) => (
-    <div className="flex flex-col">
+  const statusBadge = (a: AdapterHealth) => {
+    const color = statusDotColor(a.status);
+    const label = a.status === "healthy" ? "OK" : a.status === "degraded" ? "DEG" : "DOWN";
+    return (
+      <span
+        className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-sm shrink-0"
+        style={{ color, backgroundColor: `${color}18`, border: `1px solid ${color}30` }}
+      >
+        {label}
+      </span>
+    );
+  };
+
+  const latencyBadge = (ms: number) => {
+    const color = ms === 0 ? C.onSurfaceVariant : ms < 300 ? C.green : ms < 800 ? C.amber : C.err;
+    return (
+      <span className="text-[9px] font-mono tabular-nums" style={{ color }}>
+        {ms === 0 ? "—" : `${ms}ms`}
+      </span>
+    );
+  };
+
+  const adapterName = (service: string) => {
+    const names: Record<string, string> = {
+      across: "Across", cctp: "Circle CCTP", stargate: "Stargate",
+      canonical_base: "Base Bridge", canonical_optimism: "OP Bridge",
+      canonical_arbitrum: "Arb Bridge", mayan: "Mayan", blockdaemon: "Blockdaemon",
+      uniswap_trading_api: "Uniswap", oneinch: "1inch", zeroex: "0x",
+      blockdaemon_dex: "Blockdaemon DEX",
+    };
+    return names[service] ?? service.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+  };
+
+  const renderGroup = (rows: AdapterHealth[]) => (
+    <div className="grid grid-cols-1 gap-1.5 px-4 pb-3">
       {rows.map((a) => (
-        <div key={`${a.kind}-${a.service}`} className="px-4 py-2.5 border-t first:border-t-0 border-[#2a2a2a]">
-          <div className="flex items-center gap-3">
-            <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: statusDotColor(a.status) }} />
-            <span className="text-xs flex-1 truncate" style={{ color: C.onSurface }}>
-              {a.service}
-            </span>
-            <span className="text-[11px] font-mono tabular-nums shrink-0" style={{ color: C.onSurfaceVariant }}>
-              {a.latency_ms} ms
-            </span>
+        <div
+          key={`${a.kind}-${a.service}`}
+          className="flex items-start gap-2.5 px-3 py-2.5 rounded"
+          style={{ backgroundColor: C.surfaceContainerLow }}
+        >
+          <div className="mt-0.5">{statusBadge(a)}</div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[12px] font-medium truncate" style={{ color: C.onSurface }}>
+                {adapterName(a.service)}
+              </span>
+              {latencyBadge(a.latency_ms)}
+            </div>
+            {!!a.reason && a.status !== "healthy" && (
+              <p className="text-[10px] mt-1 leading-snug" style={{ color: C.onSurfaceVariant, opacity: 0.75 }}>
+                {a.reason.length > 120 ? `${a.reason.slice(0, 120)}…` : a.reason}
+              </p>
+            )}
           </div>
-          {!!a.reason && (
-            <p className="text-[10px] mt-1 leading-relaxed break-words overflow-hidden" style={{ color: C.onSurfaceVariant, maxHeight: "4.5em" }}>
-              {a.reason.length > 200 ? `${a.reason.substring(0, 200)}...` : a.reason}
-            </p>
-          )}
         </div>
       ))}
     </div>
   );
 
+  const healthyCount = adapters.filter(a => a.status === "healthy").length;
+
   return (
-    <div className="rounded" style={{ backgroundColor: C.surfaceContainer }}>
-      <div className="px-4 py-2.5">
+    <div className="rounded overflow-hidden" style={{ backgroundColor: C.surfaceContainer }}>
+      {/* Header */}
+      <div className="px-4 py-3 flex items-center justify-between border-b border-[#2a2a2a]">
         <span className="text-xs font-semibold tracking-wide" style={{ color: C.onSurface }}>
           Adapter Health
         </span>
+        {!loading && !error && adapters.length > 0 && (
+          <span className="text-[10px] font-mono" style={{ color: healthyCount === adapters.length ? C.green : C.amber }}>
+            {healthyCount}/{adapters.length} healthy
+          </span>
+        )}
       </div>
 
       {loading ? (
-        <div className="px-4 py-4 text-xs" style={{ color: C.onSurfaceVariant }}>Loading adapter checks…</div>
+        <div className="px-4 py-5 flex items-center gap-2">
+          <span className="w-3 h-3 rounded-full animate-pulse" style={{ backgroundColor: C.accent }} />
+          <span className="text-xs" style={{ color: C.onSurfaceVariant }}>Checking adapters…</span>
+        </div>
       ) : error ? (
         <div className="px-4 py-4 text-xs" style={{ color: C.err }}>{error}</div>
       ) : adapters.length === 0 ? (
         <div className="px-4 py-4 text-xs" style={{ color: C.onSurfaceVariant }}>No adapters reported</div>
       ) : (
-        <div>
-          <div className="px-4 py-1 text-[10px] uppercase tracking-wider font-semibold" style={{ color: C.accent }}>
-            Bridges ({bridges.length})
-          </div>
-          {renderRows(bridges)}
-          <div className="px-4 py-1 text-[10px] uppercase tracking-wider font-semibold border-t border-[#2a2a2a]" style={{ color: C.accent }}>
-            DEXes ({dexes.length})
-          </div>
-          {renderRows(dexes)}
-        </div>
+        <>
+          {bridges.length > 0 && (
+            <>
+              <div className="px-4 pt-3 pb-1.5 flex items-center gap-2">
+                <span className="text-[9px] font-mono uppercase tracking-widest font-bold" style={{ color: C.accent }}>
+                  Bridges
+                </span>
+                <span className="text-[9px] font-mono" style={{ color: C.onSurfaceVariant }}>({bridges.length})</span>
+              </div>
+              {renderGroup(bridges)}
+            </>
+          )}
+          {dexes.length > 0 && (
+            <>
+              <div className="px-4 pt-1.5 pb-1.5 flex items-center gap-2 border-t border-[#2a2a2a]">
+                <span className="text-[9px] font-mono uppercase tracking-widest font-bold" style={{ color: C.accent }}>
+                  DEXes
+                </span>
+                <span className="text-[9px] font-mono" style={{ color: C.onSurfaceVariant }}>({dexes.length})</span>
+              </div>
+              {renderGroup(dexes)}
+            </>
+          )}
+        </>
       )}
+    </div>
+  );
+}
+
+function RecentActivity({ ops }: { ops: OperationDetail[] }) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [ops.length]);
+
+  return (
+    <div
+      className="rounded overflow-hidden flex flex-col"
+      style={{ backgroundColor: C.surfaceContainerLow }}
+    >
+      <div className="px-4 py-2.5" style={{ backgroundColor: C.surfaceContainer }}>
+        <span className="text-xs font-semibold tracking-wide" style={{ color: C.onSurface }}>
+          Recent Activity
+        </span>
+      </div>
+
+      <div className="h-[280px] overflow-y-auto px-4 py-3 flex flex-col gap-1 font-mono text-[11px] leading-relaxed">
+        {ops.length === 0 ? (
+          <span style={{ color: C.onSurfaceVariant }}>No operations yet</span>
+        ) : (
+          ops.flatMap(op =>
+            (op.events ?? []).map((ev, i) => (
+              <div key={`${op.operation_id}-${i}`} className="flex gap-2">
+                <span className="tabular-nums shrink-0" style={{ color: C.onSurfaceVariant }}>
+                  {relativeTime(ev.created_at)}
+                </span>
+                <span
+                  className="font-semibold shrink-0"
+                  style={{ color: ev.event_type === "status_transition" && ev.to_status === "failed" ? C.err : C.accent }}
+                >
+                  [{ev.event_type.toUpperCase().slice(0, 3)}]
+                </span>
+                <span style={{ color: C.onSurface }}>
+                  op={truncateId(op.operation_id)} {ev.to_status ? `→ ${ev.to_status}` : ""} {ev.tx_hash ? `hash=${ev.tx_hash.slice(0, 10)}…` : ""}
+                </span>
+              </div>
+            ))
+          )
+        )}
+        <div ref={bottomRef} />
+      </div>
     </div>
   );
 }
@@ -429,10 +405,49 @@ function AdapterHealthPanel({
 
 export function OperationsDashboard() {
   const [tab, setTab] = useState<TabKey>("active");
+  const [ops, setOps] = useState<OperationDetail[]>([]);
+  const [opsLoading, setOpsLoading] = useState(true);
+  const [opsError, setOpsError] = useState<string | null>(null);
   const [adapters, setAdapters] = useState<AdapterHealth[]>([]);
   const [healthLoading, setHealthLoading] = useState(true);
   const [healthError, setHealthError] = useState<string | null>(null);
-  const ops = filterOps(tab);
+  const [chainScope, setChainScope] = useState<string>(() => {
+    const s = window.localStorage.getItem("chain_scope");
+    return s === "testnet" ? "testnet" : "mainnet";
+  });
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<string>).detail;
+      if (detail === "mainnet" || detail === "testnet") setChainScope(detail);
+    };
+    window.addEventListener("chain-scope-change", handler);
+    return () => window.removeEventListener("chain-scope-change", handler);
+  }, []);
+
+  const loadOps = useCallback(async (cancelled: { v: boolean }, scope: string) => {
+    try {
+      const data = await fetchOperations(50, scope);
+      if (cancelled.v) return;
+      setOps(data.operations ?? []);
+      setOpsError(null);
+    } catch (e) {
+      if (cancelled.v) return;
+      setOpsError(e instanceof Error ? e.message : "Failed to load operations");
+    } finally {
+      if (!cancelled.v) setOpsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const cancelled = { v: false };
+    loadOps(cancelled, chainScope);
+    const id = window.setInterval(() => loadOps(cancelled, chainScope), 10_000);
+    return () => {
+      cancelled.v = true;
+      window.clearInterval(id);
+    };
+  }, [loadOps, chainScope]);
 
   useEffect(() => {
     let cancelled = false;
@@ -450,12 +465,14 @@ export function OperationsDashboard() {
       }
     };
     load();
-    const id = window.setInterval(load, 30000);
+    const id = window.setInterval(load, 30_000);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
   }, []);
+
+  const filteredOps = ops.filter(op => dbStatusToTab(op.status) === tab);
 
   return (
     <div className="max-w-7xl mx-auto w-full">
@@ -494,7 +511,15 @@ export function OperationsDashboard() {
             </div>
 
             {/* Operation cards */}
-            {ops.length === 0 ? (
+            {opsLoading ? (
+              <div className="py-16 text-center">
+                <span className="text-sm" style={{ color: C.onSurfaceVariant }}>Loading operations…</span>
+              </div>
+            ) : opsError ? (
+              <div className="py-16 text-center">
+                <span className="text-sm" style={{ color: C.err }}>{opsError}</span>
+              </div>
+            ) : filteredOps.length === 0 ? (
               <div className="py-16 text-center">
                 <span className="text-sm" style={{ color: C.onSurfaceVariant }}>
                   No {TAB_LABELS[tab].toLowerCase()} operations
@@ -502,8 +527,8 @@ export function OperationsDashboard() {
               </div>
             ) : (
               <div className="flex flex-col gap-3">
-                {ops.map((op) => (
-                  <OperationCard key={op.id} op={op} />
+                {filteredOps.map((op) => (
+                  <OperationCard key={op.operation_id} op={op} />
                 ))}
               </div>
             )}
@@ -511,7 +536,7 @@ export function OperationsDashboard() {
 
           {/* ── Right sidebar ── */}
           <div className="w-full lg:w-[380px] shrink-0 flex flex-col gap-4 lg:sticky lg:top-6">
-            <TerminalLogs logs={MOCK_LOGS} />
+            <RecentActivity ops={ops} />
             <AdapterHealthPanel adapters={adapters} loading={healthLoading} error={healthError} />
           </div>
         </div>
