@@ -4,6 +4,7 @@
 set -euo pipefail
 
 export NETWORK=testnet
+export PORT=8081
 export ACROSS_API_URL=https://testnet.across.to/api
 export CCTP_ATTESTATION_URL=https://iris-api-sandbox.circle.com
 

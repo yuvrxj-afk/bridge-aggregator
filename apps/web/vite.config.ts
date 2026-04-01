@@ -10,6 +10,14 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      // Testnet traffic is routed to the testnet backend (port 8081).
+      // Run the testnet backend with: ./scripts/run-testnet.sh
+      '/api/testnet': {
+        target: 'http://localhost:8081',
+        rewrite: (path: string) => path.replace(/^\/api\/testnet/, '/api'),
+        changeOrigin: true,
+      },
+      // Mainnet traffic goes to the default backend (port 8080).
       '/api': {
         target: 'http://localhost:8080',
         changeOrigin: true,

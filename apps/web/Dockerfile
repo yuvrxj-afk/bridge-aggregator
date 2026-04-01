@@ -1,6 +1,4 @@
 # ── Build stage ───────────────────────────────────────────────────────────────
-# Vite bakes VITE_* env vars into the bundle at build time.
-# Pass them as --build-arg (e.g. --build-arg VITE_API_URL=https://api.example.com).
 FROM oven/bun:1.1.38-alpine AS builder
 
 WORKDIR /app
@@ -14,14 +12,11 @@ RUN bun install --frozen-lockfile
 # Copy all source (turbo needs the full workspace to resolve tasks).
 COPY apps/web ./apps/web
 
-# Build args for Vite env vars — set real values via docker build --build-arg.
-ARG VITE_API_URL=http://localhost:8080
+# WalletConnect project ID is the only build-time env var needed.
+# API URLs use relative paths proxied by nginx — no VITE_API_URL required.
+# Network (mainnet/testnet) is a runtime toggle stored in localStorage.
 ARG VITE_WALLETCONNECT_PROJECT_ID=
-ARG VITE_NETWORK=mainnet
-
-ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_WALLETCONNECT_PROJECT_ID=$VITE_WALLETCONNECT_PROJECT_ID
-ENV VITE_NETWORK=$VITE_NETWORK
 
 RUN bun run build:web
 
@@ -30,7 +25,7 @@ FROM nginx:1.27-alpine
 
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
 
-# SPA routing: all paths fall through to index.html.
+# SPA routing + API proxy to backend services.
 COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
