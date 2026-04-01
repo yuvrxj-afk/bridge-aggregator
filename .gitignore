@@ -1,1 +1,21 @@
 docs
+.cursor
+.mcp.json
+# web
+contracts
+node_modules
+apps/web/node_modules
+apps/web/dist
+.turbo
+# Build artifacts and secrets
+.env
+.env.*
+!.env.example
+server
+response.json
+md
+image.png
+DESIGN_PROMPT_ROUTES.md
+PLATFORM_REVIEW.md
+TESTNET_SUPPORT_RESEARCH.md
+.claude/
