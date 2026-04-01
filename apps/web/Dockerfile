@@ -32,7 +32,8 @@ COPY apps/web/nginx.conf /etc/nginx/templates/default.conf.template
 
 ENV API_UPSTREAM=api:8080
 ENV API_TESTNET_UPSTREAM=api:8080
+ENV PORT=8080
 
-EXPOSE 80
+EXPOSE 8080
 
-CMD ["/bin/sh", "-c", "envsubst '${API_UPSTREAM} ${API_TESTNET_UPSTREAM}' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
+CMD ["/bin/sh", "-c", "envsubst '${PORT} ${API_UPSTREAM} ${API_TESTNET_UPSTREAM}' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
