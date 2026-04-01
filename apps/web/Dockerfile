@@ -3,12 +3,13 @@ FROM oven/bun:1.1.38-alpine AS builder
 
 WORKDIR /app
 
+# Native build deps required by transitive node-gyp packages (e.g. usb).
+RUN apk add --no-cache python3 make g++ linux-headers eudev-dev pkgconfig
+
 # Copy workspace root manifests first — cached until they change.
 COPY package.json bun.lock turbo.json ./
 COPY apps/web/package.json ./apps/web/
 
-# Install only web workspace deps and skip optional native packages
-# (e.g. usb/libudev chain) that are not needed for browser builds.
 RUN bun install --frozen-lockfile --filter=@apps/web --omit=optional
 
 # Copy all source (turbo needs the full workspace to resolve tasks).
