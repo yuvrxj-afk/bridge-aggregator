@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -29,7 +30,8 @@ type mockBridge struct {
 	err   error
 }
 
-func (m *mockBridge) ID() string { return m.id }
+func (m *mockBridge) ID() string                    { return m.id }
+func (m *mockBridge) Tier() models.AdapterTier      { return models.TierProduction }
 func (m *mockBridge) GetQuote(_ context.Context, _ models.QuoteRequest) (*models.Route, error) {
 	return m.route, m.err
 }
@@ -40,7 +42,8 @@ type mockDEX struct {
 	err   error
 }
 
-func (m *mockDEX) ID() string { return m.id }
+func (m *mockDEX) ID() string               { return m.id }
+func (m *mockDEX) Tier() models.AdapterTier { return models.TierProduction }
 func (m *mockDEX) GetQuote(_ context.Context, _ dex.QuoteRequest) (*dex.Quote, error) {
 	return m.quote, m.err
 }
@@ -59,12 +62,13 @@ func newTestRouter(bridgeAdapters []bridges.Adapter, dexAdapters []dex.Adapter) 
 	r.GET("/health", api.HealthHandler)
 	v1 := r.Group("/api/v1")
 	{
+		v1.GET("/health/adapters", api.AdapterHealthHandler(bridgeAdapters, dexAdapters, "mainnet"))
 		v1.POST("/quote", api.QuoteHandler(bridgeAdapters, dexAdapters))
-		v1.POST("/execute", api.ExecuteHandler(nil, bridgeAdapters))     // nil store
-		v1.GET("/operations/:id", api.GetOperationHandler(nil))          // nil store
+		v1.POST("/execute", api.ExecuteHandler(nil, bridgeAdapters))             // nil store
+		v1.GET("/operations/:id", api.GetOperationHandler(nil))                  // nil store
 		v1.PATCH("/operations/:id/status", api.PatchOperationStatusHandler(nil)) // nil store
 		v1.POST("/dex/quote", api.DEXQuoteHandler(dexAdapters))
-		v1.POST("/route/stepTransaction", api.StepTransactionHandler(dexAdapters))
+		v1.POST("/route/stepTransaction", api.StepTransactionHandler(dexAdapters, nil))
 	}
 	return r
 }
@@ -99,6 +103,33 @@ func TestHealthHandler(t *testing.T) {
 	}
 }
 
+func TestAdapterHealthHandler(t *testing.T) {
+	r := newTestRouter(
+		[]bridges.Adapter{
+			&mockBridge{id: "cctp", route: &models.Route{RouteID: "cctp", Hops: []models.Hop{{HopType: models.HopTypeBridge}}}},
+			&mockBridge{id: "across", err: errors.New("across api key must be configured")},
+		},
+		[]dex.Adapter{
+			&mockDEX{id: "uniswap_trading_api", quote: &dex.Quote{DEXID: "uniswap_trading_api", EstimatedOutputAmount: "1"}},
+			&mockDEX{id: "zeroex", err: errors.New("timeout contacting upstream")},
+		},
+	)
+	w := doRequest(r, http.MethodGet, "/api/v1/health/adapters", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("adapter health: status %d, body: %s", w.Code, w.Body.String())
+	}
+	var resp models.AdapterHealthResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode adapter health: %v", err)
+	}
+	if len(resp.Adapters) != 4 {
+		t.Fatalf("expected 4 adapter rows, got %d", len(resp.Adapters))
+	}
+	if resp.Status != "down" {
+		t.Fatalf("overall status = %q, want down", resp.Status)
+	}
+}
+
 // ── /api/v1/quote ─────────────────────────────────────────────────────────────
 
 func TestQuoteHandler_CrossChain_CCTP(t *testing.T) {
@@ -110,14 +141,14 @@ func TestQuoteHandler_CrossChain_CCTP(t *testing.T) {
 		TotalFee:              "0",
 		Hops: []models.Hop{
 			{
-				HopType:          models.HopTypeBridge,
-				BridgeID:         "cctp",
-				FromChain:        "arbitrum",
-				ToChain:          "base",
-				FromAsset:        "USDC",
-				ToAsset:          "USDC",
-				FromTokenAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
-				ToTokenAddress:   "0x833589fCD6eDb6E08f4c7C32D4f71b54bDa02913",
+				HopType:           models.HopTypeBridge,
+				BridgeID:          "cctp",
+				FromChain:         "arbitrum",
+				ToChain:           "base",
+				FromAsset:         "USDC",
+				ToAsset:           "USDC",
+				FromTokenAddress:  "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+				ToTokenAddress:    "0x833589fCD6eDb6E08f4c7C32D4f71b54bDa02913",
 				AmountInBaseUnits: "5000000",
 				ProviderData: mustMarshal(map[string]any{
 					"source":   "direct",
@@ -243,8 +274,8 @@ func TestQuoteHandler_NoRoutes(t *testing.T) {
 		nil,
 	)
 	reqBody := models.QuoteRequest{
-		Source:      models.Endpoint{ChainID: 1, Chain: "ethereum", Asset: "ETH", TokenAddress: "0x0000000000000000000000000000000000000000", TokenDecimals: 18},
-		Destination: models.Endpoint{ChainID: 8453, Chain: "base", Asset: "ETH", TokenAddress: "0x0000000000000000000000000000000000000000", TokenDecimals: 18},
+		Source:          models.Endpoint{ChainID: 1, Chain: "ethereum", Asset: "ETH", TokenAddress: "0x0000000000000000000000000000000000000000", TokenDecimals: 18},
+		Destination:     models.Endpoint{ChainID: 8453, Chain: "base", Asset: "ETH", TokenAddress: "0x0000000000000000000000000000000000000000", TokenDecimals: 18},
 		AmountBaseUnits: "10000000000000000",
 	}
 	w := doRequest(r, http.MethodPost, "/api/v1/quote", reqBody)
@@ -403,16 +434,17 @@ func TestStepTransactionHandler_CCTPBridge(t *testing.T) {
 			RouteID: "cctp",
 			Hops: []models.Hop{
 				{
-					HopType:          models.HopTypeBridge,
-					BridgeID:         "cctp",
-					FromChain:        "arbitrum",
-					ToChain:          "base",
+					HopType:           models.HopTypeBridge,
+					BridgeID:          "cctp",
+					FromChain:         "arbitrum",
+					ToChain:           "base",
 					AmountInBaseUnits: "5000000",
-					ProviderData:     pd,
+					ProviderData:      pd,
 				},
 			},
 		},
-		HopIndex: 0,
+		HopIndex:        0,
+		ReceiverAddress: "0x4f8bbccc89d443e6998e52d7b57ce2ae09476328",
 	}
 
 	w := doRequest(r, http.MethodPost, "/api/v1/route/stepTransaction", reqBody)
