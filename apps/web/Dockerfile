@@ -17,7 +17,9 @@ ARG VITE_WALLETCONNECT_PROJECT_ID=
 ENV VITE_WALLETCONNECT_PROJECT_ID=$VITE_WALLETCONNECT_PROJECT_ID
 
 # Build explicitly (no script indirection) and assert output folder exists.
-RUN cd apps/web && bunx tsc -b && bunx vite build && test -d dist
+RUN bun pm untrusted \
+ && bun --cwd apps/web run build \
+ && test -d apps/web/dist
 
 # ── Runtime ─────────────────────────────────────────────
 FROM nginx:1.27-alpine
