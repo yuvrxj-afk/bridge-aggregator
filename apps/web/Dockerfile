@@ -21,7 +21,8 @@ COPY apps/web ./apps/web
 ARG VITE_WALLETCONNECT_PROJECT_ID=
 ENV VITE_WALLETCONNECT_PROJECT_ID=$VITE_WALLETCONNECT_PROJECT_ID
 
-RUN bun --cwd apps/web run build
+# Run build tools directly to avoid workspace script resolution quirks in CI.
+RUN bun --cwd apps/web x tsc -b && bun --cwd apps/web x vite build
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM nginx:1.27-alpine
