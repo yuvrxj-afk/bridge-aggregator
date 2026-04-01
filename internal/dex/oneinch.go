@@ -42,12 +42,20 @@ func NewOneInchAdapter(baseURL, apiKey, version, swapper string) *OneInchAdapter
 		version: version,
 		swapper: swapper,
 		client: &http.Client{
-			Timeout: 15 * time.Second,
+			Timeout: 5 * time.Second,
 		},
 	}
 }
 
 func (a *OneInchAdapter) ID() string { return oneInchID }
+
+// Tier returns TierUncredentialed when the API key is not configured.
+func (a *OneInchAdapter) Tier() models.AdapterTier {
+	if a.apiKey == "" {
+		return models.TierUncredentialed
+	}
+	return models.TierProduction
+}
 
 func normalizeWrappedNative(chainID int, addr string) (string, error) {
 	if !strings.EqualFold(addr, nativeTokenZeroAddress) {
@@ -166,6 +174,10 @@ func (a *OneInchAdapter) GetQuote(ctx context.Context, req QuoteRequest) (*Quote
 	if !IsValidEVMAddress(swapper) {
 		swapper = a.swapper
 	}
+	slippage := "1"
+	if req.MaxSlippageBps > 0 {
+		slippage = strconv.FormatFloat(float64(req.MaxSlippageBps)/100.0, 'f', 2, 64)
+	}
 	pq, _ := json.Marshal(oneInchProviderQuote{
 		SwapParams: map[string]string{
 			"chainId":          strconv.Itoa(req.TokenInChainID),
@@ -173,7 +185,7 @@ func (a *OneInchAdapter) GetQuote(ctx context.Context, req QuoteRequest) (*Quote
 			"dst":              dst,
 			"amount":           req.Amount,
 			"from":             strings.ToLower(swapper),
-			"slippage":         "1",
+			"slippage":         slippage,
 			"disableEstimate":  "false",
 			"allowPartialFill": "false",
 		},

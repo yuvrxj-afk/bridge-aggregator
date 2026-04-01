@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"bridge-aggregator/internal/models"
 )
 
 // UniswapTradingAdapter calls the Uniswap Trading API /v1/quote endpoint.
@@ -30,8 +32,14 @@ func NewUniswapTradingAdapter(baseURL, apiKey, signer string) *UniswapTradingAda
 	}
 }
 
-func (a *UniswapTradingAdapter) ID() string {
-	return "uniswap_trading_api"
+func (a *UniswapTradingAdapter) ID() string { return "uniswap_trading_api" }
+
+// Tier returns TierProduction when an API key is configured, TierUncredentialed otherwise.
+func (a *UniswapTradingAdapter) Tier() models.AdapterTier {
+	if a.apiKey == "" {
+		return models.TierUncredentialed
+	}
+	return models.TierProduction
 }
 
 // uniswapQuoteRequest is a minimal request body for EXACT_INPUT swaps on mainnet.
@@ -41,7 +49,7 @@ type uniswapQuoteRequest struct {
 	RoutingPreference           string `json:"routingPreference"`
 	SpreadOptimization          string `json:"spreadOptimization"`
 	Urgency                     string `json:"urgency"`
-	PermitAmount                string `json:"permitAmount"`
+	PermitAmount                string `json:"permitAmount"` // "FULL" or "EXACT" - EXACT for exact input amount
 	Type                        string `json:"type"`
 	Amount                      string `json:"amount"`
 	TokenInChainID              int    `json:"tokenInChainId"`
@@ -84,12 +92,15 @@ func (a *UniswapTradingAdapter) GetQuote(ctx context.Context, req QuoteRequest) 
 	}
 
 	body := uniswapQuoteRequest{
+		// BEST_PRICE routing finds the optimal route across v2/v3/v4 pools.
+		// Note: CLASSIC routing has been deprecated by Uniswap API.
+		// BEST_PRICE may require Permit2 signature for some routes, but provides better quotes.
 		GeneratePermitAsTransaction: false,
 		AutoSlippage:                "DEFAULT",
 		RoutingPreference:           "BEST_PRICE",
 		SpreadOptimization:          "EXECUTION",
-		Urgency:                     "urgent",
-		PermitAmount:                "FULL",
+		Urgency:                     "normal",
+		PermitAmount:                "EXACT",
 		Type:                        "EXACT_INPUT",
 		Amount:                      req.Amount,
 		TokenInChainID:              req.TokenInChainID,
@@ -120,11 +131,14 @@ func (a *UniswapTradingAdapter) GetQuote(ctx context.Context, req QuoteRequest) 
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("uniswap quote: unexpected status %d", resp.StatusCode)
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("uniswap quote read body: %w", err)
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("uniswap quote: unexpected status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("uniswap quote read body: %w", err)
 	}

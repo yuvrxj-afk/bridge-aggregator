@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"bridge-aggregator/internal/ethutil"
+	"bridge-aggregator/internal/models"
 )
 
 // QuoteRequest represents a simple on-chain swap quote request on a single chain.
@@ -16,8 +17,9 @@ type QuoteRequest struct {
 	TokenOut        string `json:"tokenOut"`
 
 	// Amount is in base units (e.g. wei for ETH, 6-decimals for USDC).
-	Amount  string `json:"amount"`
-	Swapper string `json:"swapper,omitempty"`
+	Amount         string `json:"amount"`
+	Swapper        string `json:"swapper,omitempty"`
+	MaxSlippageBps int    `json:"max_slippage_bps,omitempty"`
 
 	// Backward-compat fields (deprecated; will be removed). Kept so older callers don't break,
 	// but without a token registry we can't reliably translate them.
@@ -41,6 +43,9 @@ type Quote struct {
 // Adapter is the DEX adapter interface. Each implementation returns a swap Quote.
 type Adapter interface {
 	ID() string
+	// Tier returns the adapter's production readiness tier.
+	// Only tier 1 and tier 2 participate in the DEX quote fan-out.
+	Tier() models.AdapterTier
 	GetQuote(ctx context.Context, req QuoteRequest) (*Quote, error)
 }
 

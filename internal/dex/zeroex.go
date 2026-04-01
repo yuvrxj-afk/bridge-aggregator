@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"bridge-aggregator/internal/models"
 )
 
 const zeroExID = "zeroex"
@@ -60,13 +62,20 @@ func NewZeroExAdapter(baseURL, apiKey, taker string) *ZeroExAdapter {
 		apiKey:  apiKey,
 		taker:   taker,
 		client: &http.Client{
-			Timeout: 15 * time.Second,
+			Timeout: 5 * time.Second,
 		},
 	}
 }
 
-func (a *ZeroExAdapter) ID() string {
-	return zeroExID
+func (a *ZeroExAdapter) ID() string { return zeroExID }
+
+// Tier returns TierConfigBroken when taker address is missing or invalid (0x queries would fail),
+// TierDegraded otherwise (firm quotes are functional but intermittent).
+func (a *ZeroExAdapter) Tier() models.AdapterTier {
+	if !IsValidEVMAddress(a.taker) {
+		return models.TierConfigBroken
+	}
+	return models.TierDegraded
 }
 
 // zeroExQuoteResponse matches the 200 response when liquidityAvailable is true.
