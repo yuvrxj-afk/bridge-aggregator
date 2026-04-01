@@ -1,0 +1,26 @@
+{
+  "name": "bridge-aggregator-monorepo",
+  "private": true,
+  "packageManager": "bun@1.1.38",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "turbo run build --filter=@apps/*",
+    "dev": "turbo run dev --filter=@apps/*",
+    "lint": "turbo run lint --filter=@apps/*",
+    "test": "turbo run test --filter=@apps/*",
+    "build:web": "turbo run build --filter=@apps/web",
+    "dev:web": "turbo run dev --filter=@apps/web",
+    "lint:web": "turbo run lint --filter=@apps/web",
+    "build:api": "turbo run build --filter=@apps/api",
+    "test:api": "turbo run test --filter=@apps/api",
+    "smoke:phaseb": "./scripts/smoke_phase_b.sh"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.8"
+  },
+  "dependencies": {
+    "framer-motion": "^12.38.0"
+  }
+}

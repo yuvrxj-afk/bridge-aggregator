@@ -1,0 +1,10 @@
+{
+  "name": "@apps/api",
+  "private": true,
+  "scripts": {
+    "dev": "sh -c 'cd ../.. && go run ./cmd/server'",
+    "build": "sh -c 'cd ../.. && go build ./cmd/server'",
+    "lint": "sh -c 'cd ../.. && go test ./...'",
+    "test": "sh -c 'cd ../.. && go test ./...'"
+  }
+}
