@@ -12,6 +12,22 @@ type Config struct {
 	DatabaseURL string
 	RPCURL      string
 
+	// Network selects mainnet vs testnet mode. "mainnet" (default) or "testnet".
+	// Set via NETWORK env var. Testnet mode activates testnet chain IDs, contract
+	// addresses, and adapter API URLs without touching any mainnet config.
+	Network string
+
+	// CCTPAttestationURL is the Circle Iris API for CCTP attestations.
+	// Defaults to mainnet; override to sandbox URL in testnet mode.
+	CCTPAttestationURL string
+
+	// Testnet RPC endpoints — only used when NETWORK=testnet.
+	// Defaults are public free-tier endpoints; override with Alchemy/Infura for reliability.
+	SepoliaRPCURL        string
+	BaseSepoliaRPCURL    string
+	ArbitrumSepoliaRPCURL string
+	OPSepoliaRPCURL      string
+
 	AcrossAPIURL      string
 	AcrossAPIKey      string
 	AcrossDepositor   string // wallet address used as depositor in Across quotes
@@ -49,6 +65,12 @@ func Load() (*Config, error) {
 	viper.SetDefault("port", "8080")
 	viper.SetDefault("database_url", "")
 	viper.SetDefault("rpc_url", "")
+	viper.SetDefault("network", "mainnet")
+	viper.SetDefault("cctp_attestation_url", "https://iris-api.circle.com")
+	viper.SetDefault("sepolia_rpc_url", "https://rpc.sepolia.org")
+	viper.SetDefault("base_sepolia_rpc_url", "https://sepolia.base.org")
+	viper.SetDefault("arbitrum_sepolia_rpc_url", "https://sepolia-rollup.arbitrum.io/rpc")
+	viper.SetDefault("op_sepolia_rpc_url", "https://sepolia.optimism.io")
 	viper.SetDefault("across_api_url", "https://app.across.to/api")
 	viper.SetDefault("across_api_key", "")
 	viper.SetDefault("across_depositor", "")
@@ -79,6 +101,12 @@ func Load() (*Config, error) {
 		Port:        viper.GetString("port"),
 		DatabaseURL: viper.GetString("database_url"),
 		RPCURL:      viper.GetString("rpc_url"),
+		Network:             viper.GetString("network"),
+		CCTPAttestationURL:  viper.GetString("cctp_attestation_url"),
+		SepoliaRPCURL:         viper.GetString("sepolia_rpc_url"),
+		BaseSepoliaRPCURL:     viper.GetString("base_sepolia_rpc_url"),
+		ArbitrumSepoliaRPCURL: viper.GetString("arbitrum_sepolia_rpc_url"),
+		OPSepoliaRPCURL:       viper.GetString("op_sepolia_rpc_url"),
 
 		AcrossAPIURL:    viper.GetString("across_api_url"),
 		AcrossAPIKey:    viper.GetString("across_api_key"),

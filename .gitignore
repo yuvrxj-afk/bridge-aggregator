@@ -11,7 +11,7 @@ apps/web/dist
 .env
 .env.*
 !.env.example
-server
+/server
 response.json
 md
 image.png

@@ -1,16 +1,16 @@
 port: 8080
-database_url: postgres://user:pass@localhost/db
+database_url: postgres://bridge:bridge123@localhost:5433/bridge_aggregator?sslmode=disable
 rpc_url: https://rpc.ankr.com/eth
 across_api_url: https://app.across.to/api
 across_api_key: ""
-across_depositor: ""   # Set to your wallet address (or ACROSS_DEPOSITOR env var)
+across_depositor: ""
 stargate_api_url: https://transfer.layerzero-api.com/v1
 stargate_api_key: ""
 blockdaemon_api_url: https://svc.blockdaemon.com
 blockdaemon_api_key: ""
 uniswap_api_url: https://trade-api.gateway.uniswap.org/v1
 uniswap_api_key: ""
-uniswap_swapper_wallet: "0xYOUR_WALLET_ADDRESS"
+uniswap_swapper_wallet: ""
 zeroex_api_url: https://api.0x.org
 zeroex_api_key: ""
 zeroex_taker: ""
