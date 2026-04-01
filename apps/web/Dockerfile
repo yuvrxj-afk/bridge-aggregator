@@ -3,15 +3,13 @@ FROM oven/bun:1.1.38-alpine AS builder
 
 WORKDIR /app
 
-# Some transitive web deps (e.g. usb/node-gyp chain) need Python/toolchain
-# during install in Alpine-based builder images.
-RUN apk add --no-cache python3 make g++ linux-headers
-
 # Copy workspace root manifests first — cached until they change.
 COPY package.json bun.lock turbo.json ./
 COPY apps/web/package.json ./apps/web/
 
-RUN bun install --frozen-lockfile
+# Install only web workspace deps and skip optional native packages
+# (e.g. usb/libudev chain) that are not needed for browser builds.
+RUN bun install --frozen-lockfile --filter=@apps/web --omit=optional
 
 # Copy all source (turbo needs the full workspace to resolve tasks).
 COPY apps/web ./apps/web
@@ -22,7 +20,7 @@ COPY apps/web ./apps/web
 ARG VITE_WALLETCONNECT_PROJECT_ID=
 ENV VITE_WALLETCONNECT_PROJECT_ID=$VITE_WALLETCONNECT_PROJECT_ID
 
-RUN bun run build:web
+RUN bun --cwd apps/web run build
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM nginx:1.27-alpine
