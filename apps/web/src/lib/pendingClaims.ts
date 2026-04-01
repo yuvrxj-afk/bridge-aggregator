@@ -17,6 +17,7 @@ export interface PendingClaim {
   toChain: string;
   decimals: number;
   savedAt: number;        // Date.now() — for sorting / expiry
+  operationId?: string;   // DB operation ID — used to patch status to completed after claim
 }
 
 const KEY = "cctp_pending_claims";

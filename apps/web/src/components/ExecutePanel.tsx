@@ -600,13 +600,38 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
     setOperationId("");
   }, [route.route_id]);
 
-  // Persist operation status to DB when execution completes or fails.
+  // Persist operation status to DB on every significant phase transition.
   useEffect(() => {
     if (!operationId) return;
-    if (phase === "done" && txHash) {
-      patchOperationStatus(operationId, "submitted", txHash).catch(() => undefined);
+
+    const notifyDashboard = () =>
+      window.dispatchEvent(new CustomEvent("operation-updated"));
+
+    if (phase === "cctp_claim_saved" && txHash) {
+      // CCTP depositForBurn confirmed — funds en-route, claim pending.
+      patchOperationStatus(operationId, "submitted", txHash)
+        .then(notifyDashboard)
+        .catch(() => undefined);
+    } else if (phase === "bridge_submitted" && txHash) {
+      // Non-CCTP bridge deposit confirmed — waiting for fill on destination.
+      patchOperationStatus(operationId, "submitted", txHash)
+        .then(notifyDashboard)
+        .catch(() => undefined);
+    } else if (phase === "done" && txHash) {
+      // All hops complete. Try "completed" first (valid if already "submitted").
+      // Fall back to "submitted" if still in "pending" (single-hop route that never
+      // set bridge_submitted).
+      patchOperationStatus(operationId, "completed", txHash)
+        .then(notifyDashboard)
+        .catch(() =>
+          patchOperationStatus(operationId, "submitted", txHash)
+            .then(notifyDashboard)
+            .catch(() => undefined),
+        );
     } else if (phase === "error_terminal" || phase === "error_requote") {
-      patchOperationStatus(operationId, "failed").catch(() => undefined);
+      patchOperationStatus(operationId, "failed")
+        .then(notifyDashboard)
+        .catch(() => undefined);
     }
   }, [phase, txHash, operationId]);
 
@@ -868,6 +893,7 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
                   toChain: dstHop.to_chain,
                   decimals: srcDec,
                   savedAt: Date.now(),
+                  ...(operationId && { operationId }),
                 });
                 setTxHash(hash);
                 setPhase("cctp_claim_saved");

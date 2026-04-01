@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { formatUnits } from "viem";
 import { useWriteContract, useSwitchChain, useChainId } from "wagmi";
 import { loadPendingClaims, removePendingClaim, type PendingClaim } from "../lib/pendingClaims";
+import { patchOperationStatus } from "../api";
 
 const RECEIVE_MESSAGE_ABI = [{
   name: "receiveMessage",
@@ -115,6 +116,12 @@ export function PendingClaimsBanner({ chainScope }: Props) {
         chainId: claim.claimChainId,
       });
       setClaimStates(prev => ({ ...prev, [claim.id]: { attestation: att, claiming: false, error: null, claimedTx: hash } }));
+      // Patch operation to completed if we have a DB tracking ID.
+      if (claim.operationId) {
+        patchOperationStatus(claim.operationId, "completed", hash)
+          .then(() => window.dispatchEvent(new CustomEvent("operation-updated")))
+          .catch(() => undefined);
+      }
       // Remove from pending store after successful claim.
       removePendingClaim(claim.id);
       setClaims(prev => prev.filter(c => c.id !== claim.id));

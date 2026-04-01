@@ -56,6 +56,17 @@ function truncateId(id: string) {
   return id.length > 18 ? `${id.slice(0, 10)}…${id.slice(-6)}` : id;
 }
 
+const CHAIN_NAME_TO_ID: Record<string, number> = {
+  ethereum: 1, base: 8453, arbitrum: 42161, optimism: 10, polygon: 137,
+  avalanche: 43114, bsc: 56,
+  sepolia: 11155111, "base-sepolia": 84532,
+  "arbitrum-sepolia": 421614, "op-sepolia": 11155420,
+  basesepolia: 84532, arbitrumsepolia: 421614, opsepolia: 11155420,
+};
+function chainNameToId(name: string): number {
+  return CHAIN_NAME_TO_ID[name?.toLowerCase()] ?? 0;
+}
+
 function formatAmount(amountBaseUnits: string, decimals: number): string {
   try {
     const n = Number(formatUnits(BigInt(amountBaseUnits), decimals));
@@ -103,13 +114,35 @@ function statusDotColor(s: AdapterHealth["status"]) {
 function StatusBadge({ status }: { status: string }) {
   const color = statusColor(status);
   const bg = `${color}18`;
+  const icon =
+    status === "completed" ? "✓" :
+    status === "failed"    ? "✕" :
+    status === "submitted" ? "⟳" : "·";
   return (
     <span
-      className="text-[10px] font-semibold uppercase tracking-wider px-2.5 py-0.5 rounded"
+      className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider px-2.5 py-0.5 rounded"
       style={{ color, backgroundColor: bg }}
     >
-      {statusLabel(status)}
+      <span>{icon}</span>
+      <span>{statusLabel(status)}</span>
     </span>
+  );
+}
+
+function TxHashLink({ txHash, chainId }: { txHash: string; chainId: number }) {
+  const url = explorerUrl(chainId, txHash);
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-1 font-mono text-[11px] hover:underline"
+      style={{ color: C.accent }}
+      title={txHash}
+    >
+      {txHash.slice(0, 8)}…{txHash.slice(-6)}
+      <span className="text-[10px] opacity-60">↗</span>
+    </a>
   );
 }
 
@@ -118,108 +151,107 @@ function OperationCard({ op }: { op: OperationDetail }) {
   const lastHop  = op.route.hops[op.route.hops.length - 1];
   if (!firstHop || !lastHop) return null;
 
-  const fromAmount = formatAmount(firstHop.amount_in_base_units, 6);
-  const toAmount   = formatAmount(op.route.estimated_output_amount, 6);
-  const bridgeNames = [...new Set(op.route.hops.map(h => h.bridge_id))].join(" + ");
+  const srcChainId = chainNameToId(firstHop.from_chain);
+  const dstChainId = chainNameToId(lastHop.to_chain);
+
+  // Derive token decimals from hop data, fall back to 6 for stables.
+  const srcDec = 6;
+  const dstDec = 6;
+  const fromAmount = formatAmount(firstHop.amount_in_base_units, srcDec);
+  const toAmount   = formatAmount(op.route.estimated_output_amount, dstDec);
+  const bridgeNames = [...new Set(op.route.hops.map(h => h.bridge_id).filter(Boolean))].join(" + ");
 
   const events = op.events ?? [];
   const timeline = events.slice().reverse().map(ev => ({
-    label: ev.event_type === "created" ? "Operation created" :
-           ev.event_type === "status_transition" ? `${ev.from_status} → ${ev.to_status}` :
-           ev.event_type,
+    label: ev.event_type === "created"
+      ? "Created"
+      : ev.event_type === "status_transition"
+      ? `${ev.from_status} → ${ev.to_status}`
+      : ev.event_type,
     timestamp: relativeTime(ev.created_at),
-    status: (ev.to_status === "failed" ? "failed" : "done") as "done" | "failed" | "pending",
+    failed: ev.to_status === "failed",
+    txHash: ev.tx_hash,
   }));
 
-  const txUrl = op.tx_hash
-    ? explorerUrl(firstHop.from_chain === "ethereum" ? 1 : firstHop.from_chain === "sepolia" ? 11155111 : 0, op.tx_hash)
-    : null;
-
   return (
-    <div className="rounded" style={{ backgroundColor: C.surfaceContainer }}>
-      <div className="p-5 flex flex-col gap-3">
-        {/* top row: badge + id + time */}
-        <div className="flex items-center justify-between gap-3">
+    <div className="rounded border" style={{ backgroundColor: C.surfaceContainer, borderColor: `${C.surfaceContainerHigh}` }}>
+      <div className="p-4 flex flex-col gap-3">
+        {/* top row: status + id + time */}
+        <div className="flex items-center gap-2 min-w-0">
           <StatusBadge status={op.status} />
-          <div className="flex items-center gap-3 min-w-0">
-            <span
-              className="text-xs font-mono tabular-nums truncate"
-              style={{ color: C.onSurfaceVariant }}
-              title={op.operation_id}
-            >
-              {truncateId(op.operation_id)}
-            </span>
-            <span className="text-[10px] font-mono shrink-0" style={{ color: C.onSurfaceVariant }}>
-              {relativeTime(op.created_at)}
-            </span>
-          </div>
+          <span
+            className="text-[10px] font-mono tabular-nums truncate flex-1 min-w-0"
+            style={{ color: C.onSurfaceVariant }}
+            title={op.operation_id}
+          >
+            {truncateId(op.operation_id)}
+          </span>
+          <span className="text-[10px] font-mono shrink-0" style={{ color: C.onSurfaceVariant }}>
+            {relativeTime(op.created_at)}
+          </span>
         </div>
 
         {/* route summary */}
         <div className="flex items-center gap-2 flex-wrap">
           <div className="flex items-center gap-1.5">
-            <ChainIcon chainId={firstHop.from_chain === "ethereum" ? 1 : firstHop.from_chain === "sepolia" ? 11155111 : 0} size={14} />
-            <span className="text-sm font-medium" style={{ color: C.onSurface }}>
+            <ChainIcon chainId={srcChainId} size={14} />
+            <span className="text-sm font-semibold" style={{ color: C.onSurface }}>
               {fromAmount} {firstHop.from_asset}
             </span>
-            <span className="text-[10px]" style={{ color: C.onSurfaceVariant }}>{firstHop.from_chain}</span>
           </div>
 
-          <span className="text-xs" style={{ color: C.onSurfaceVariant }}>→</span>
+          <span className="text-xs font-semibold" style={{ color: C.onSurfaceVariant }}>→</span>
 
           <div className="flex items-center gap-1.5">
-            <ChainIcon chainId={lastHop.to_chain === "ethereum" ? 1 : lastHop.to_chain === "base" ? 8453 : lastHop.to_chain === "base_sepolia" ? 84532 : 0} size={14} />
-            <span className="text-sm font-medium" style={{ color: C.onSurface }}>
+            <ChainIcon chainId={dstChainId} size={14} />
+            <span className="text-sm font-semibold" style={{ color: C.onSurface }}>
               {toAmount} {lastHop.to_asset}
             </span>
-            <span className="text-[10px]" style={{ color: C.onSurfaceVariant }}>{lastHop.to_chain}</span>
           </div>
 
-          <span
-            className="ml-auto text-[10px] uppercase tracking-wider font-medium px-2 py-0.5 rounded"
-            style={{ color: C.accent, backgroundColor: `${C.accent}14` }}
-          >
-            {bridgeNames}
-          </span>
+          {bridgeNames && (
+            <span
+              className="ml-auto text-[10px] uppercase tracking-wider font-medium px-2 py-0.5 rounded shrink-0"
+              style={{ color: C.accent, backgroundColor: `${C.accent}14` }}
+            >
+              {bridgeNames}
+            </span>
+          )}
         </div>
 
-        {/* timeline from DB events */}
-        {timeline.length > 0 && (
-          <div className="flex flex-col gap-2 mt-1">
-            {timeline.map((step, i) => {
-              const dotColor =
-                step.status === "done"   ? C.green :
-                step.status === "failed" ? C.err :
-                C.onSurfaceVariant;
-              const isLast = i === timeline.length - 1;
-              return (
-                <div key={i} className="flex items-start gap-3">
-                  <div className="flex flex-col items-center">
-                    <div className="w-2 h-2 rounded-full shrink-0 mt-[3px]" style={{ backgroundColor: dotColor }} />
-                    {!isLast && <div className="w-px flex-1 min-h-[16px]" style={{ backgroundColor: C.surfaceContainerHigh }} />}
-                  </div>
-                  <div className="flex items-baseline justify-between flex-1 gap-4 pb-1">
-                    <span className="text-xs" style={{ color: step.status === "failed" ? C.err : C.onSurface }}>{step.label}</span>
-                    <span className="text-[10px] font-mono tabular-nums" style={{ color: C.onSurfaceVariant }}>{step.timestamp}</span>
-                  </div>
-                </div>
-              );
-            })}
+        {/* tx hash row */}
+        {op.tx_hash && (
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-wider" style={{ color: C.onSurfaceVariant }}>
+              tx
+            </span>
+            <TxHashLink txHash={op.tx_hash} chainId={srcChainId} />
           </div>
         )}
 
-        {/* action buttons */}
-        {txUrl && (
-          <div className="flex items-center gap-2 mt-1">
-            <a
-              href={txUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[11px] font-semibold px-3 py-1.5 rounded transition-opacity hover:opacity-80"
-              style={{ backgroundColor: C.surfaceContainerHigh, color: C.onSurfaceVariant }}
-            >
-              Open Explorer
-            </a>
+        {/* timeline */}
+        {timeline.length > 0 && (
+          <div className="flex flex-col gap-1.5 pt-1 border-t" style={{ borderColor: `${C.surfaceContainerHigh}80` }}>
+            {timeline.map((step, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <span
+                  className="w-1.5 h-1.5 rounded-full shrink-0"
+                  style={{ backgroundColor: step.failed ? C.err : C.green }}
+                />
+                <span
+                  className="text-[11px] flex-1"
+                  style={{ color: step.failed ? C.err : C.onSurface }}
+                >
+                  {step.label}
+                </span>
+                {step.txHash && (
+                  <TxHashLink txHash={step.txHash} chainId={srcChainId} />
+                )}
+                <span className="text-[10px] tabular-nums shrink-0" style={{ color: C.onSurfaceVariant }}>
+                  {step.timestamp}
+                </span>
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -443,9 +475,13 @@ export function OperationsDashboard() {
     const cancelled = { v: false };
     loadOps(cancelled, chainScope);
     const id = window.setInterval(() => loadOps(cancelled, chainScope), 10_000);
+    // Refresh immediately when any operation status changes (fired by ExecutePanel / PendingClaimsBanner).
+    const onUpdate = () => loadOps(cancelled, chainScope);
+    window.addEventListener("operation-updated", onUpdate);
     return () => {
       cancelled.v = true;
       window.clearInterval(id);
+      window.removeEventListener("operation-updated", onUpdate);
     };
   }, [loadOps, chainScope]);
 
@@ -494,17 +530,26 @@ export function OperationsDashboard() {
             <div className="flex gap-1 rounded p-1" style={{ backgroundColor: C.surfaceContainer }}>
               {TAB_KEYS.map((key) => {
                 const active = tab === key;
+                const count = ops.filter(op => dbStatusToTab(op.status) === key).length;
                 return (
                   <button
                     key={key}
                     onClick={() => setTab(key)}
-                    className="flex-1 text-xs font-semibold py-2 rounded transition-colors cursor-pointer"
+                    className="flex-1 flex items-center justify-center gap-1.5 text-xs font-semibold py-2 rounded transition-colors cursor-pointer"
                     style={{
                       backgroundColor: active ? C.surfaceContainerHigh : "transparent",
                       color: active ? C.accent : C.onSurfaceVariant,
                     }}
                   >
                     {TAB_LABELS[key]}
+                    {count > 0 && (
+                      <span
+                        className="text-[10px] px-1.5 py-px rounded-full font-mono"
+                        style={{ backgroundColor: active ? `${C.accent}28` : `${C.onSurfaceVariant}20`, color: active ? C.accent : C.onSurfaceVariant }}
+                      >
+                        {count}
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -526,7 +571,7 @@ export function OperationsDashboard() {
                 </span>
               </div>
             ) : (
-              <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-3 overflow-y-auto max-h-[72vh] pr-1">
                 {filteredOps.map((op) => (
                   <OperationCard key={op.operation_id} op={op} />
                 ))}
