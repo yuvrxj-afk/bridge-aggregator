@@ -115,6 +115,7 @@ func StreamQuoteHandler(adapters []bridges.Adapter, dexAdapters []dex.Adapter) g
 		var mu sync.Mutex
 		var sent int
 
+		req = service.EnrichQuoteRequest(req)
 		router.QuoteStream(ctx, adapters, dexAdapters, req, func(route models.Route) {
 			data, err := json.Marshal(route)
 			if err != nil {
@@ -431,6 +432,41 @@ func ExecuteHandler(s *store.Store, adapters []bridges.Adapter) gin.HandlerFunc 
 		}
 
 		c.JSON(http.StatusOK, resp)
+	}
+}
+
+// ListOperationsHandler returns the most recent operations, newest-first.
+func ListOperationsHandler(s *store.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s == nil {
+			RespondError(c, http.StatusServiceUnavailable, CodeInternal, "database not configured; set DATABASE_URL to enable operations", nil)
+			return
+		}
+		limit := 50
+		if q := c.Query("limit"); q != "" {
+			if n, err := strconv.Atoi(q); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		scope := c.Query("scope") // "mainnet", "testnet", or "" for all
+		ops, err := s.ListOperations(limit, scope)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, CodeInternal, err.Error(), nil)
+			return
+		}
+		out := make([]models.OperationResponse, 0, len(ops))
+		for _, op := range ops {
+			out = append(out, models.OperationResponse{
+				OperationID:       op.ID,
+				Status:            op.Status,
+				TxHash:            op.TxHash,
+				Route:             op.Route,
+				ClientReferenceID: op.ClientReferenceID,
+				CreatedAt:         op.CreatedAt.Format(time.RFC3339),
+				UpdatedAt:         op.UpdatedAt.Format(time.RFC3339),
+			})
+		}
+		c.JSON(http.StatusOK, gin.H{"operations": out})
 	}
 }
 
@@ -762,5 +798,84 @@ func CCTPAttestationHandler(attestationURL string) gin.HandlerFunc {
 			return
 		}
 		c.Data(resp.StatusCode, "application/json", body)
+	}
+}
+
+// CCTPAttestationStreamHandler streams Circle Iris attestation status via SSE.
+// It polls internally every 12 seconds and pushes an event when attestation arrives.
+// The stream closes automatically once the attestation is complete.
+//
+//	GET /api/v1/cctp/attestation/stream/:messageHash
+func CCTPAttestationStreamHandler(attestationURL string) gin.HandlerFunc {
+	client := &http.Client{Timeout: 10 * time.Second}
+	return func(c *gin.Context) {
+		messageHash := c.Param("messageHash")
+		if messageHash == "" {
+			RespondError(c, http.StatusBadRequest, CodeInvalidRequest, "messageHash is required", nil)
+			return
+		}
+
+		flusher, ok := c.Writer.(http.Flusher)
+		if !ok {
+			RespondError(c, http.StatusInternalServerError, CodeInternal, "streaming not supported", nil)
+			return
+		}
+
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+
+		poll := func() (string, bool) {
+			url := attestationURL + "/v1/attestations/" + messageHash
+			resp, err := client.Get(url)
+			if err != nil {
+				return "", false
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil || resp.StatusCode != http.StatusOK {
+				return "", false
+			}
+			var v struct {
+				Status      string `json:"status"`
+				Attestation string `json:"attestation"`
+			}
+			if json.Unmarshal(body, &v) != nil {
+				return "", false
+			}
+			if v.Status == "complete" && v.Attestation != "" {
+				return v.Attestation, true
+			}
+			return "", false
+		}
+
+		ticker := time.NewTicker(12 * time.Second)
+		defer ticker.Stop()
+		ctx := c.Request.Context()
+
+		// Immediate first check before the first tick.
+		if att, done := poll(); done {
+			fmt.Fprintf(c.Writer, "data: {\"status\":\"complete\",\"attestation\":%q}\n\n", att)
+			flusher.Flush()
+			return
+		}
+		fmt.Fprintf(c.Writer, "data: {\"status\":\"pending\"}\n\n")
+		flusher.Flush()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if att, done := poll(); done {
+					fmt.Fprintf(c.Writer, "data: {\"status\":\"complete\",\"attestation\":%q}\n\n", att)
+					flusher.Flush()
+					return
+				}
+				fmt.Fprintf(c.Writer, "data: {\"status\":\"pending\"}\n\n")
+				flusher.Flush()
+			}
+		}
 	}
 }

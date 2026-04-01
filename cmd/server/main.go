@@ -134,6 +134,7 @@ func main() {
 		v1.POST("/quote", api.QuoteHandler(adapters, dexAdapters))
 		v1.POST("/quote/stream", api.StreamQuoteHandler(adapters, dexAdapters))
 		v1.POST("/execute", api.ExecuteHandler(dbStore, adapters))
+		v1.GET("/operations", api.ListOperationsHandler(dbStore))
 		v1.GET("/operations/:id", api.GetOperationHandler(dbStore))
 		v1.GET("/status/:txHash", api.TransactionStatusHandler(blockdaemonClient))
 		v1.GET("/operations/:id/events", api.GetOperationEventsHandler(dbStore))
@@ -142,6 +143,7 @@ func main() {
 		v1.POST("/route/stepTransaction", api.StepTransactionHandler(dexAdapters, bridgeClients))
 		v1.POST("/route/buildTransaction", api.BuildTransactionHandler(adapters))
 		v1.GET("/cctp/attestation/:messageHash", api.CCTPAttestationHandler(cfg.CCTPAttestationURL))
+		v1.GET("/cctp/attestation/stream/:messageHash", api.CCTPAttestationStreamHandler(cfg.CCTPAttestationURL))
 	}
 
 	addr := ":" + cfg.Port

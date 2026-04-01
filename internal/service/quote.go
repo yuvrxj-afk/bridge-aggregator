@@ -19,8 +19,43 @@ import (
 	"bridge-aggregator/internal/router"
 )
 
+// EnrichQuoteRequest fills in ChainID and TokenAddress on Source and Destination
+// from the known token registry when the caller omits them (e.g. the frontend
+// sends only chain name + asset symbol). This is required for the composition
+// engine (quoteBridgeThenSwap, quoteSwapBridgeSwap) which needs both fields.
+func EnrichQuoteRequest(req models.QuoteRequest) models.QuoteRequest {
+	if req.Source.ChainID == 0 && req.Source.Chain != "" {
+		req.Source.ChainID = int(bridges.ChainIDFromName(req.Source.Chain))
+	}
+	if req.Destination.ChainID == 0 && req.Destination.Chain != "" {
+		req.Destination.ChainID = int(bridges.ChainIDFromName(req.Destination.Chain))
+	}
+	if req.Source.TokenAddress == "" && req.Source.ChainID != 0 && req.Source.Asset != "" {
+		if m, ok := bridges.TokenByChainAndSymbol[bridges.ChainID(req.Source.ChainID)]; ok {
+			if t, ok := m[strings.ToUpper(req.Source.Asset)]; ok {
+				req.Source.TokenAddress = t.Address
+				if req.Source.TokenDecimals == 0 {
+					req.Source.TokenDecimals = t.Decimals
+				}
+			}
+		}
+	}
+	if req.Destination.TokenAddress == "" && req.Destination.ChainID != 0 && req.Destination.Asset != "" {
+		if m, ok := bridges.TokenByChainAndSymbol[bridges.ChainID(req.Destination.ChainID)]; ok {
+			if t, ok := m[strings.ToUpper(req.Destination.Asset)]; ok {
+				req.Destination.TokenAddress = t.Address
+				if req.Destination.TokenDecimals == 0 {
+					req.Destination.TokenDecimals = t.Decimals
+				}
+			}
+		}
+	}
+	return req
+}
+
 // Quote returns routes for the given request using registered adapters and DEX adapters.
 func Quote(ctx context.Context, adapters []bridges.Adapter, dexAdapters []dex.Adapter, req models.QuoteRequest) (*models.QuoteResponse, error) {
+	req = EnrichQuoteRequest(req)
 	routes, err := router.QuoteUnified(ctx, adapters, dexAdapters, req)
 	if err != nil {
 		if errors.Is(err, router.ErrNoRoutes) {

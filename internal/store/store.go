@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"bridge-aggregator/internal/models"
@@ -23,11 +24,27 @@ type Operation struct {
 	ID                string
 	Route             models.Route
 	Status            string
+	Network           string // "mainnet" or "testnet"
 	ClientReferenceID string
 	IdempotencyKey    string
 	TxHash            string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+}
+
+var testnetChains = map[string]bool{
+	"sepolia": true, "base-sepolia": true, "basesepolia": true,
+	"arbitrum-sepolia": true, "arbitrumsepolia": true,
+	"op-sepolia": true, "opsepolia": true, "optimism-sepolia": true,
+	"solana-devnet": true,
+}
+
+// networkFromRoute derives "mainnet" or "testnet" from the first hop's from_chain.
+func networkFromRoute(r models.Route) string {
+	if len(r.Hops) > 0 && testnetChains[strings.ToLower(r.Hops[0].FromChain)] {
+		return "testnet"
+	}
+	return "mainnet"
 }
 
 // OperationEvent is an immutable event entry for operation lifecycle changes.
@@ -90,8 +107,10 @@ CREATE TABLE IF NOT EXISTS operation_events (
 CREATE INDEX IF NOT EXISTS operation_events_operation_id_idx
   ON operation_events(operation_id, created_at DESC);
 
--- Migration: add tx_hash column to existing deployments (safe no-op if already present).
+-- Migrations: safe no-op if columns already exist.
 ALTER TABLE operations ADD COLUMN IF NOT EXISTS tx_hash TEXT;
+ALTER TABLE operations ADD COLUMN IF NOT EXISTS network TEXT NOT NULL DEFAULT 'mainnet';
+CREATE INDEX IF NOT EXISTS operations_network_idx ON operations(network, created_at DESC);
 `
 	_, err := s.DB.Exec(ddl)
 	return err
@@ -110,12 +129,16 @@ func (s *Store) CreateOperation(op Operation) (*Operation, error) {
 		return nil, err
 	}
 
+	if op.Network == "" {
+		op.Network = networkFromRoute(op.Route)
+	}
+
 	const q = `
-INSERT INTO operations (id, route, status, client_reference_id, idempotency_key)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO operations (id, route, status, network, client_reference_id, idempotency_key)
+VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING created_at, updated_at;
 `
-	row := s.DB.QueryRow(q, op.ID, routeBytes, op.Status, nullIfEmpty(op.ClientReferenceID), nullIfEmpty(op.IdempotencyKey))
+	row := s.DB.QueryRow(q, op.ID, routeBytes, op.Status, op.Network, nullIfEmpty(op.ClientReferenceID), nullIfEmpty(op.IdempotencyKey))
 	if err := row.Scan(&op.CreatedAt, &op.UpdatedAt); err != nil {
 		return nil, err
 	}
@@ -238,6 +261,64 @@ VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), NULLIF($5,''), NULLIF($6,'')::json
 `
 	_, err := s.DB.Exec(q, operationID, eventType, fromStatus, toStatus, txHash, metadata)
 	return err
+}
+
+// ListOperations returns the most recent operations, newest-first.
+// network filters by "mainnet" or "testnet"; empty string returns all.
+func (s *Store) ListOperations(limit int, network string) ([]Operation, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if network != "" {
+		const q = `
+SELECT id, route, status, COALESCE(network,'mainnet'),
+       COALESCE(client_reference_id,''), COALESCE(idempotency_key,''), COALESCE(tx_hash,''),
+       created_at, updated_at
+FROM operations
+WHERE network = $2
+ORDER BY created_at DESC
+LIMIT $1;
+`
+		rows, err = s.DB.Query(q, limit, network)
+	} else {
+		const q = `
+SELECT id, route, status, COALESCE(network,'mainnet'),
+       COALESCE(client_reference_id,''), COALESCE(idempotency_key,''), COALESCE(tx_hash,''),
+       created_at, updated_at
+FROM operations
+ORDER BY created_at DESC
+LIMIT $1;
+`
+		rows, err = s.DB.Query(q, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]Operation, 0, limit)
+	for rows.Next() {
+		var (
+			op    Operation
+			rjson []byte
+		)
+		if err := rows.Scan(
+			&op.ID, &rjson, &op.Status, &op.Network,
+			&op.ClientReferenceID, &op.IdempotencyKey, &op.TxHash,
+			&op.CreatedAt, &op.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(rjson, &op.Route); err != nil {
+			return nil, err
+		}
+		out = append(out, op)
+	}
+	return out, rows.Err()
 }
 
 // ListOperationEvents returns operation lifecycle events newest-first.
