@@ -36,8 +36,8 @@ func cctpHop() models.Hop {
 	pd := mustMarshal(map[string]any{
 		"source":                  "direct",
 		"protocol":                "circle_cctp",
-		"src_domain":              3,  // Arbitrum
-		"dst_domain":              6,  // Base
+		"src_domain":              3, // Arbitrum
+		"dst_domain":              6, // Base
 		"token_messenger_src":     "0x19330d10D9Cc8751218eaf51E8885D058642E08A",
 		"token_messenger_dst":     "0x1682Ae6375C4E4A97e4B583BC394c861A46D8962",
 		"message_transmitter_dst": "0xAD09780d193884d503182aD4588450C416D6F9D4",
@@ -45,16 +45,16 @@ func cctpHop() models.Hop {
 		"amount":                  "5000000",
 	})
 	return models.Hop{
-		HopType:          models.HopTypeBridge,
-		BridgeID:         "cctp",
-		FromChain:        "arbitrum",
-		ToChain:          "base",
-		FromAsset:        "USDC",
-		ToAsset:          "USDC",
-		FromTokenAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
-		ToTokenAddress:   "0x833589fCD6eDb6E08f4c7C32D4f71b54bDa02913",
+		HopType:           models.HopTypeBridge,
+		BridgeID:          "cctp",
+		FromChain:         "arbitrum",
+		ToChain:           "base",
+		FromAsset:         "USDC",
+		ToAsset:           "USDC",
+		FromTokenAddress:  "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+		ToTokenAddress:    "0x833589fCD6eDb6E08f4c7C32D4f71b54bDa02913",
 		AmountInBaseUnits: "5000000",
-		ProviderData:     pd,
+		ProviderData:      pd,
 	}
 }
 
@@ -148,7 +148,8 @@ func zeroexSwapHop() models.Hop {
 // mockZeroExAdapter implements dex.Adapter with ID "zeroex" (used for stepTransaction routing).
 type mockZeroExAdapter struct{}
 
-func (m *mockZeroExAdapter) ID() string { return "zeroex" }
+func (m *mockZeroExAdapter) ID() string               { return "zeroex" }
+func (m *mockZeroExAdapter) Tier() models.AdapterTier { return models.TierProduction }
 func (m *mockZeroExAdapter) GetQuote(_ context.Context, _ dex.QuoteRequest) (*dex.Quote, error) {
 	return &dex.Quote{DEXID: "zeroex", EstimatedOutputAmount: "2142959229232459"}, nil
 }
@@ -157,9 +158,14 @@ func (m *mockZeroExAdapter) GetQuote(_ context.Context, _ dex.QuoteRequest) (*de
 
 func TestPopulateStepTransaction_CCTP(t *testing.T) {
 	route := makeRoute(cctpHop())
-	req := models.StepTransactionRequest{Route: route, HopIndex: 0}
+	req := models.StepTransactionRequest{
+		Route:           route,
+		HopIndex:        0,
+		SenderAddress:   "0x1111111111111111111111111111111111111111",
+		ReceiverAddress: "0x4F8bBccC89D443E6998e52D7B57ce2aE09476328",
+	}
 
-	resp, err := service.PopulateStepTransaction(context.Background(), nil, req)
+	resp, err := service.PopulateStepTransaction(context.Background(), nil, nil, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -210,6 +216,11 @@ func TestPopulateStepTransaction_CCTP(t *testing.T) {
 	if deposit.Tx.Contract != "0x19330d10D9Cc8751218eaf51E8885D058642E08A" {
 		t.Errorf("step[1].Tx.Contract = %q", deposit.Tx.Contract)
 	}
+	if got, ok := deposit.Tx.Params["mintRecipient"].(string); !ok {
+		t.Fatalf("step[1].Tx.Params[mintRecipient] missing or non-string: %#v", deposit.Tx.Params["mintRecipient"])
+	} else if got != "0x0000000000000000000000004f8bbccc89d443e6998e52d7b57ce2ae09476328" {
+		t.Errorf("step[1].Tx.Params[mintRecipient] = %q", got)
+	}
 	// ABI fragment must be valid JSON
 	var abiCheck []map[string]any
 	if err := json.Unmarshal([]byte("["+deposit.Tx.ABIFragment+"]"), &abiCheck); err != nil {
@@ -237,7 +248,7 @@ func TestPopulateStepTransaction_Across(t *testing.T) {
 	route := makeRoute(acrossHop())
 	req := models.StepTransactionRequest{Route: route, HopIndex: 0}
 
-	resp, err := service.PopulateStepTransaction(context.Background(), nil, req)
+	resp, err := service.PopulateStepTransaction(context.Background(), nil, nil, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -315,13 +326,13 @@ func TestPopulateStepTransaction_AcrossETH(t *testing.T) {
 		},
 	})
 	hop := models.Hop{
-		HopType:          models.HopTypeBridge,
-		BridgeID:         "across",
-		FromChain:        "arbitrum",
-		ToChain:          "base",
-		ProviderData:     pd,
+		HopType:      models.HopTypeBridge,
+		BridgeID:     "across",
+		FromChain:    "arbitrum",
+		ToChain:      "base",
+		ProviderData: pd,
 	}
-	resp, err := service.PopulateStepTransaction(context.Background(), nil, models.StepTransactionRequest{
+	resp, err := service.PopulateStepTransaction(context.Background(), nil, nil, models.StepTransactionRequest{
 		Route: makeRoute(hop), HopIndex: 0,
 	})
 	if err != nil {
@@ -344,7 +355,7 @@ func TestPopulateStepTransaction_AcrossETH(t *testing.T) {
 
 func TestPopulateStepTransaction_CanonicalBase_ETH(t *testing.T) {
 	route := makeRoute(canonicalBaseETHHop())
-	resp, err := service.PopulateStepTransaction(context.Background(), nil, models.StepTransactionRequest{
+	resp, err := service.PopulateStepTransaction(context.Background(), nil, nil, models.StepTransactionRequest{
 		Route: route, HopIndex: 0,
 	})
 	if err != nil {
@@ -382,7 +393,7 @@ func TestPopulateStepTransaction_ZeroEx(t *testing.T) {
 	route := makeRoute(zeroexSwapHop())
 	req := models.StepTransactionRequest{Route: route, HopIndex: 0}
 
-	resp, err := service.PopulateStepTransaction(context.Background(), []dex.Adapter{&mockZeroExAdapter{}}, req)
+	resp, err := service.PopulateStepTransaction(context.Background(), []dex.Adapter{&mockZeroExAdapter{}}, nil, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -413,14 +424,14 @@ func TestPopulateStepTransaction_ZeroEx(t *testing.T) {
 func TestPopulateStepTransaction_HopIndexOutOfRange(t *testing.T) {
 	route := makeRoute(cctpHop())
 
-	_, err := service.PopulateStepTransaction(context.Background(), nil, models.StepTransactionRequest{
+	_, err := service.PopulateStepTransaction(context.Background(), nil, nil, models.StepTransactionRequest{
 		Route: route, HopIndex: 5, // only 1 hop
 	})
 	if err != service.ErrHopIndexOutOfRange {
 		t.Errorf("expected ErrHopIndexOutOfRange, got %v", err)
 	}
 
-	_, err = service.PopulateStepTransaction(context.Background(), nil, models.StepTransactionRequest{
+	_, err = service.PopulateStepTransaction(context.Background(), nil, nil, models.StepTransactionRequest{
 		Route: route, HopIndex: -1,
 	})
 	if err != service.ErrHopIndexOutOfRange {
@@ -435,7 +446,7 @@ func TestPopulateStepTransaction_BridgeHopNoProviderData(t *testing.T) {
 		// No ProviderData
 	}
 	route := makeRoute(hop)
-	_, err := service.PopulateStepTransaction(context.Background(), nil, models.StepTransactionRequest{
+	_, err := service.PopulateStepTransaction(context.Background(), nil, nil, models.StepTransactionRequest{
 		Route: route, HopIndex: 0,
 	})
 	if err == nil {
@@ -454,7 +465,7 @@ func TestPopulateStepTransaction_UnknownProtocol(t *testing.T) {
 		ProviderData: pd,
 	}
 	route := makeRoute(hop)
-	_, err := service.PopulateStepTransaction(context.Background(), nil, models.StepTransactionRequest{
+	_, err := service.PopulateStepTransaction(context.Background(), nil, nil, models.StepTransactionRequest{
 		Route: route, HopIndex: 0,
 	})
 	if err == nil {
@@ -465,7 +476,7 @@ func TestPopulateStepTransaction_UnknownProtocol(t *testing.T) {
 func TestPopulateStepTransaction_SwapHopNoAdapter(t *testing.T) {
 	route := makeRoute(zeroexSwapHop())
 	// Pass empty adapter list — should fail with ErrHopNotSupported
-	_, err := service.PopulateStepTransaction(context.Background(), []dex.Adapter{}, models.StepTransactionRequest{
+	_, err := service.PopulateStepTransaction(context.Background(), []dex.Adapter{}, nil, models.StepTransactionRequest{
 		Route: route, HopIndex: 0,
 	})
 	if err != service.ErrHopNotSupported {

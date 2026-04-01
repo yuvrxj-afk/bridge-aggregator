@@ -41,6 +41,22 @@ func truncateForLog(s string, max int) string {
 // ErrNoRoutes is returned when no adapter returns a valid route for the request.
 var ErrNoRoutes = errors.New("no available routes for the requested pair")
 
+// quoteIncompleteReason validates that a route has the minimum fields required for
+// execution. Returns a non-empty string describing why the quote is incomplete, or
+// empty string if it is complete. Quote data does not include tx material — full
+// tx validation happens at stepTransaction time. Here we check structural completeness.
+func quoteIncompleteReason(r *models.Route) string {
+	if r.EstimatedOutputAmount == "" || r.EstimatedOutputAmount == "0" {
+		return "estimated_output_amount is zero or missing"
+	}
+	for i, hop := range r.Hops {
+		if hop.AmountInBaseUnits == "" || hop.AmountInBaseUnits == "0" {
+			return fmt.Sprintf("hop %d has zero amount_in_base_units", i)
+		}
+	}
+	return ""
+}
+
 // Quote returns routes from all adapters in parallel, scored by fees and estimated time (best first).
 // Preferences.Priority can be "cheapest" (default) or "fastest".
 // Preferences.AllowedBridges, if set, restricts which adapters are queried.
@@ -70,6 +86,22 @@ func Quote(ctx context.Context, adapters []bridges.Adapter, req models.QuoteRequ
 		return nil, ErrNoRoutes
 	}
 
+	// Exclude tier 3 (uncredentialed) and tier 4 (config broken) adapters from fan-out.
+	// They are guaranteed to fail and waste the timeout budget.
+	eligible := make([]bridges.Adapter, 0, len(adapters))
+	for _, a := range adapters {
+		if a.Tier() <= models.TierDegraded {
+			eligible = append(eligible, a)
+		} else {
+			log.Printf("[router] skipping adapter=%s tier=%d (not eligible for fan-out)", a.ID(), a.Tier())
+		}
+	}
+	adapters = eligible
+
+	if len(adapters) == 0 {
+		return nil, ErrNoRoutes
+	}
+
 	var mu sync.Mutex
 	var routes []*models.Route
 	var wg sync.WaitGroup
@@ -81,14 +113,14 @@ func Quote(ctx context.Context, adapters []bridges.Adapter, req models.QuoteRequ
 			defer wg.Done()
 			route, err := adapter.GetQuote(ctx, req)
 			if err != nil {
-				// Don't spam logs for adapters that are intentionally not configured in baseline.
-				if strings.Contains(err.Error(), "not configured") {
-					return
-				}
-				log.Printf("[router] quote adapter=%s err=%s", adapter.ID(), truncateForLog(err.Error(), maxLogErrorLen))
+				log.Printf("[router] quote adapter=%s tier=%d err=%s", adapter.ID(), adapter.Tier(), truncateForLog(err.Error(), maxLogErrorLen))
 				return
 			}
 			if route == nil || len(route.Hops) == 0 {
+				return
+			}
+			if reason := quoteIncompleteReason(route); reason != "" {
+				log.Printf("[router] dropped incomplete quote adapter=%s reason=%s", adapter.ID(), reason)
 				return
 			}
 			mu.Lock()
@@ -143,6 +175,7 @@ func scoreRoute(r *models.Route, priority string) float64 {
 	}
 
 	fee = fee + routeScoreFeePenalty(r)
+	fee = fee + routeScoreExecutionPenalty(r)
 
 	switch priority {
 	case "fastest":
@@ -151,6 +184,25 @@ func scoreRoute(r *models.Route, priority string) float64 {
 		fallthrough
 	default:
 		return 1000.0 / (1 + fee)
+	}
+}
+
+func routeScoreExecutionPenalty(r *models.Route) float64 {
+	if r == nil || r.Execution == nil {
+		return 0.5
+	}
+	if !r.Execution.Supported {
+		return 50
+	}
+	switch r.Execution.Intent {
+	case "atomic_one_click":
+		return 0
+	case "guided_two_step":
+		return 0.1
+	case "async_claim":
+		return 1.5
+	default:
+		return 0.5
 	}
 }
 
@@ -210,6 +262,17 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+func jsonString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
 }
 
 func mustParseFloat(s string) float64 {
@@ -297,10 +360,316 @@ func QuoteUnified(ctx context.Context, adapters []bridges.Adapter, dexAdapters [
 		priority = req.Preferences.Priority
 	}
 	for i := range out {
+		out[i].Execution = deriveExecutionProfile(&out[i])
 		out[i].Score = scoreRoute(&out[i], priority)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	return out, nil
+}
+
+// QuoteStream runs all adapters in parallel (same as QuoteUnified) and fires onRoute
+// immediately for each valid result rather than collecting them. This enables SSE
+// streaming: callers receive routes as they arrive instead of waiting for all adapters.
+// The priority parameter controls per-route scoring ("cheapest" / "fastest" / "best").
+// Context cancellation propagates to all in-flight HTTP requests.
+func QuoteStream(ctx context.Context, adapters []bridges.Adapter, dexAdapters []dex.Adapter, req models.QuoteRequest, onRoute func(models.Route)) {
+	priority := "cheapest"
+	if req.Preferences != nil && req.Preferences.Priority != "" {
+		priority = req.Preferences.Priority
+	}
+
+	emit := func(r *models.Route) {
+		if r == nil || len(r.Hops) == 0 {
+			return
+		}
+		r.Execution = deriveExecutionProfile(r)
+		r.Score = scoreRoute(r, priority)
+		onRoute(*r)
+	}
+
+	var wg sync.WaitGroup
+
+	// 1. Bridge-only routes (parallel per adapter).
+	if !isSameChainRequest(req) {
+		allowed := make(map[string]bool)
+		if req.Preferences != nil {
+			for _, id := range req.Preferences.AllowedBridges {
+				allowed[id] = true
+			}
+		}
+		for _, a := range adapters {
+			adapter := a
+			if len(allowed) > 0 && !allowed[adapter.ID()] {
+				continue
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				route, err := adapter.GetQuote(ctx, req)
+				if err != nil {
+					if !strings.Contains(err.Error(), "not configured") {
+						log.Printf("[router/stream] bridge=%s err=%s", adapter.ID(), truncateForLog(err.Error(), maxLogErrorLen))
+					}
+					return
+				}
+				emit(route)
+			}()
+		}
+	}
+
+	// 2. Swap-only routes (same-chain, one goroutine per DEX adapter).
+	if len(dexAdapters) > 0 && req.Source.Chain == req.Destination.Chain {
+		for _, da := range dexAdapters {
+			dexA := da
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				r, err := quoteSwapOnly(ctx, dexA, req)
+				if err != nil {
+					log.Printf("[router/stream] dex=%s err=%s", dexA.ID(), truncateForLog(err.Error(), maxLogErrorLen))
+					return
+				}
+				emit(r)
+			}()
+		}
+	}
+
+	// 3. Cross-chain compositions (bridge+swap) — run sequentially per DEX to avoid explosion.
+	if len(dexAdapters) > 0 && req.Source.Chain != req.Destination.Chain && !strings.EqualFold(req.Source.Asset, req.Destination.Asset) {
+		for _, da := range dexAdapters {
+			dexA := da
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if rts, err := quoteBridgeThenSwap(ctx, adapters, dexA, req); err == nil {
+					for i := range rts {
+						emit(&rts[i])
+					}
+				}
+				if rts, err := quoteSwapThenBridge(ctx, adapters, dexA, req); err == nil {
+					for i := range rts {
+						emit(&rts[i])
+					}
+				}
+			}()
+		}
+		// Full 3-hop compositions — one goroutine.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if rts, err := quoteSwapBridgeSwap(ctx, adapters, dexAdapters, req); err == nil {
+				for i := range rts {
+					emit(&rts[i])
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
+func deriveExecutionProfile(r *models.Route) *models.ExecutionProfile {
+	p := &models.ExecutionProfile{
+		Supported: false,
+		Intent:    "unsupported",
+		Guarantee: "unknown",
+		Recovery:  "manual",
+	}
+	if r == nil || len(r.Hops) == 0 {
+		p.Reasons = []string{"empty_route"}
+		return p
+	}
+
+	bridgeHops := 0
+	var bridgeHop *models.Hop
+	for i := range r.Hops {
+		h := &r.Hops[i]
+		if h.HopType == models.HopTypeBridge || (h.HopType == "" && h.BridgeID != "") {
+			bridgeHops++
+			bridgeHop = h
+		}
+	}
+	if bridgeHops == 0 {
+		// Same-chain swap route.
+		p.Supported = true
+		p.Intent = "guided_two_step"
+		p.Guarantee = "manual_recovery_required"
+		p.Recovery = "resumable_guided"
+		p.Requirements = []string{"wallet_connected", "source_network_selected", "approval_if_needed"}
+		p.Metadata = map[string]string{"mode": "swap_only"}
+		return p
+	}
+	if bridgeHops > 1 {
+		p.Reasons = []string{"multi_bridge_not_supported"}
+		return p
+	}
+
+	if bridgeHop == nil {
+		p.Reasons = []string{"bridge_hop_missing"}
+		return p
+	}
+
+	// Provider-sourced metadata.
+	pd := map[string]json.RawMessage{}
+	if len(bridgeHop.ProviderData) > 0 {
+		_ = json.Unmarshal(bridgeHop.ProviderData, &pd)
+	}
+	protocol := jsonString(pd["protocol"])
+	crossSwapType := jsonString(pd["cross_swap_type"])
+
+	switch bridgeHop.BridgeID {
+	case "across":
+		p.Supported = true
+		p.Guarantee = "relay_fill_or_refund"
+		p.Recovery = "resumable_guided"
+		p.Requirements = []string{
+			"wallet_connected",
+			"source_network_selected",
+			"allowance_or_approval",
+			"fresh_quote_before_submit",
+		}
+		if crossSwapType == "anyToBridgeable" || crossSwapType == "bridgeableToAny" || crossSwapType == "anyToAny" {
+			p.Intent = "guided_two_step"
+			p.Metadata = map[string]string{
+				"execution_path": "across_swap_tx",
+				"protocol":       firstNonEmpty(protocol, "across_v3"),
+				"cross_swap_type": crossSwapType,
+			}
+			return p
+		}
+		// bridgeable / bridgeableToBridgeable routes normally use LiFi Diamond one-click.
+		// However if the router has composed a destination-side swap hop after the bridge
+		// (e.g. bridge USDC then swap USDC→USDT on destination), LiFi Diamond cannot
+		// handle that second hop — downgrade to guided_two_step so the frontend routes
+		// through the hop-by-hop stepTransaction path instead.
+		hasDestSwap := false
+		for i := range r.Hops {
+			if &r.Hops[i] == bridgeHop {
+				for _, h := range r.Hops[i+1:] {
+					if h.HopType == models.HopTypeSwap {
+						hasDestSwap = true
+					}
+				}
+				break
+			}
+		}
+		if hasDestSwap {
+			p.Intent = "guided_two_step"
+			p.Metadata = map[string]string{
+				"execution_path":  "step_transaction_bridge_then_swap",
+				"protocol":        firstNonEmpty(protocol, "across_v3"),
+				"cross_swap_type": firstNonEmpty(crossSwapType, "bridgeable"),
+			}
+		} else {
+			p.Intent = "atomic_one_click"
+			p.Metadata = map[string]string{
+				"execution_path":  "lifi_diamond_across",
+				"protocol":        firstNonEmpty(protocol, "across_v3"),
+				"cross_swap_type": firstNonEmpty(crossSwapType, "bridgeable"),
+			}
+		}
+		return p
+	case "cctp":
+		p.Supported = true
+		p.Intent = "async_claim"
+		p.Guarantee = "manual_recovery_required"
+		p.Recovery = "resumable_guided"
+		p.Requirements = []string{
+			"wallet_connected",
+			"source_network_selected",
+			"approval_if_needed",
+			"attestation_fetch_required",
+			"destination_claim_required",
+		}
+		p.Metadata = map[string]string{"protocol": firstNonEmpty(protocol, "circle_cctp")}
+		return p
+	case "stargate":
+		if hopIsExecutable(*bridgeHop) {
+			p.Supported = true
+			p.Intent = "guided_two_step"
+			p.Guarantee = "relay_fill_or_refund"
+			p.Recovery = "resumable_guided"
+			p.Requirements = []string{"wallet_connected", "source_network_selected", "approval_if_needed"}
+			p.Metadata = map[string]string{
+				"protocol": "layerzero_stargate_v2",
+				"provider": firstNonEmpty(protocol, "stargate"),
+			}
+			return p
+		}
+		p.Reasons = []string{"stargate_execution_not_integrated"}
+		return p
+	case "mayan":
+		if hopIsExecutable(*bridgeHop) {
+			p.Supported = true
+			p.Intent = "guided_two_step"
+			p.Guarantee = "relay_fill_or_refund"
+			p.Recovery = "resumable_guided"
+			p.Requirements = []string{"wallet_connected", "source_network_selected", "approval_if_needed"}
+			p.Metadata = map[string]string{"protocol": firstNonEmpty(protocol, "mayan")}
+			return p
+		}
+		p.Reasons = []string{"mayan_execution_not_integrated"}
+		return p
+	case "blockdaemon":
+		p.Reasons = []string{"quote_only_aggregator"}
+		p.Metadata = map[string]string{"protocol": firstNonEmpty(protocol, "blockdaemon_defi_api")}
+		return p
+	case "canonical_base", "canonical_optimism", "canonical_arbitrum":
+		depositOnL1 := jsonString(pd["deposit_on_l1"])
+
+		// L1→L2 deposits are supported via stepTransaction.
+		if depositOnL1 == "true" {
+			p.Supported = true
+			p.Intent = "guided_two_step"
+			p.Guarantee = "relay_fill_or_refund"
+			p.Recovery = "manual"
+			p.Requirements = []string{
+				"wallet_connected",
+				"source_network_selected",
+				"approval_if_needed",
+			}
+			p.Metadata = map[string]string{
+				"protocol":       firstNonEmpty(protocol, "canonical"),
+				"execution_path": "step_transaction_canonical",
+				"bridge":         bridgeHop.BridgeID,
+			}
+			return p
+		}
+
+		// L2→L1 withdrawals: initiation is supported, but claim requires a separate step
+		// after the 7-day finality window (OP/Base) or challenge period (Arbitrum).
+		isETH := jsonString(pd["input_token"]) == "0x0000000000000000000000000000000000000000" ||
+			jsonString(pd["input_token"]) == "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
+
+		// Arbitrum L2→L1 ERC-20 is not yet supported (no GatewayRouter on L2 implemented).
+		if bridgeHop.BridgeID == "canonical_arbitrum" && !isETH {
+			p.Reasons = []string{"canonical_arbitrum_l2_erc20_withdrawal_not_supported"}
+			p.Metadata = map[string]string{"protocol": firstNonEmpty(protocol, "canonical")}
+			return p
+		}
+
+		p.Supported = true
+		p.Intent = "async_claim"
+		p.Guarantee = "finality_then_claim"
+		p.Recovery = "manual"
+		p.Requirements = []string{
+			"wallet_connected",
+			"source_network_selected",
+			"approval_if_needed",
+			"claim_after_finality",
+		}
+		p.Metadata = map[string]string{
+			"protocol":       firstNonEmpty(protocol, "canonical"),
+			"execution_path": "step_transaction_withdrawal",
+			"bridge":         bridgeHop.BridgeID,
+			"finality":       "7_days",
+		}
+		return p
+	default:
+		p.Reasons = []string{"unsupported_bridge_execution"}
+		p.Metadata = map[string]string{"bridge_id": bridgeHop.BridgeID}
+		return p
+	}
 }
 
 func quoteSwapOnly(ctx context.Context, dexAdapter dex.Adapter, req models.QuoteRequest) (*models.Route, error) {
@@ -308,6 +677,10 @@ func quoteSwapOnly(ctx context.Context, dexAdapter dex.Adapter, req models.Quote
 		return nil, errors.New("swap-only requires source/destination chain_id and token_address")
 	}
 	amountIn := firstNonEmpty(req.AmountBaseUnits, req.Amount)
+	swapSlippage := 0
+	if req.Preferences != nil {
+		swapSlippage = req.Preferences.MaxSlippageBps
+	}
 	dq, err := dexAdapter.GetQuote(ctx, dex.QuoteRequest{
 		TokenInChainID:  req.Source.ChainID,
 		TokenOutChainID: req.Destination.ChainID,
@@ -315,6 +688,7 @@ func quoteSwapOnly(ctx context.Context, dexAdapter dex.Adapter, req models.Quote
 		TokenOut:        req.Destination.TokenAddress,
 		Amount:          amountIn,
 		Swapper:         req.Source.Address,
+		MaxSlippageBps:  swapSlippage,
 	})
 	if err != nil {
 		return nil, err
@@ -368,15 +742,29 @@ func quoteBridgeThenSwap(ctx context.Context, adapters []bridges.Adapter, dexAda
 		if tokenIn == "" {
 			continue
 		}
+		// Skip bridge hops that are missing execution data (e.g. Across without deposit params).
+		// Such routes can be quoted but not executed, so omit them from composed routes.
+		if !hopIsExecutable(h) {
+			continue
+		}
 		// Use the bridge's actual output as the DEX swap input amount (not the original request amount).
 		bridgeOutputAmount := firstNonEmpty(br.EstimatedOutputAmount, firstNonEmpty(req.AmountBaseUnits, req.Amount))
+		// Use destination address if provided; fall back to source address.
+		// On EVM, the user's wallet is the same address on every chain.
+		// This ensures the Uniswap calldata sets the correct output recipient.
+		swapper := firstNonEmpty(req.Destination.Address, req.Source.Address)
+		bridgeSwapSlippage := 0
+		if req.Preferences != nil {
+			bridgeSwapSlippage = req.Preferences.MaxSlippageBps
+		}
 		dq, derr := dexAdapter.GetQuote(ctx, dex.QuoteRequest{
 			TokenInChainID:  req.Destination.ChainID,
 			TokenOutChainID: req.Destination.ChainID,
 			TokenIn:         tokenIn,
 			TokenOut:        req.Destination.TokenAddress,
 			Amount:          bridgeOutputAmount,
-			Swapper:         req.Destination.Address,
+			Swapper:         swapper,
+			MaxSlippageBps:  bridgeSwapSlippage,
 		})
 		if derr != nil {
 			continue
@@ -422,6 +810,10 @@ func quoteSwapThenBridge(ctx context.Context, adapters []bridges.Adapter, dexAda
 	}
 
 	amountIn := firstNonEmpty(req.AmountBaseUnits, req.Amount)
+	stbSlippage := 0
+	if req.Preferences != nil {
+		stbSlippage = req.Preferences.MaxSlippageBps
+	}
 	dq, err := dexAdapter.GetQuote(ctx, dex.QuoteRequest{
 		TokenInChainID:  req.Source.ChainID,
 		TokenOutChainID: req.Source.ChainID,
@@ -429,6 +821,7 @@ func quoteSwapThenBridge(ctx context.Context, adapters []bridges.Adapter, dexAda
 		TokenOut:        rawOutAddr,
 		Amount:          amountIn,
 		Swapper:         req.Source.Address,
+		MaxSlippageBps:  stbSlippage,
 	})
 	if err != nil {
 		return nil, err
@@ -539,6 +932,10 @@ func quoteSwapBridgeSwap(ctx context.Context, adapters []bridges.Adapter, dexAda
 				}
 
 				// Step 1: DEX swap on source chain: srcToken → intermediate.
+				compSlippage := 0
+				if req.Preferences != nil {
+					compSlippage = req.Preferences.MaxSlippageBps
+				}
 				step1, err := da.GetQuote(ctx, dex.QuoteRequest{
 					TokenInChainID:  req.Source.ChainID,
 					TokenOutChainID: req.Source.ChainID,
@@ -546,6 +943,7 @@ func quoteSwapBridgeSwap(ctx context.Context, adapters []bridges.Adapter, dexAda
 					TokenOut:        srcInterim.Address,
 					Amount:          amountIn,
 					Swapper:         req.Source.Address,
+					MaxSlippageBps:  compSlippage,
 				})
 				if err != nil {
 					continue
@@ -567,8 +965,13 @@ func quoteSwapBridgeSwap(ctx context.Context, adapters []bridges.Adapter, dexAda
 					continue
 				}
 
-				// Step 3: DEX swap on destination chain: intermediate → dstToken.
-				bridgeOut := firstNonEmpty(bridgeRoute.EstimatedOutputAmount, step1.EstimatedOutputAmount)
+			// Skip bridge results that are missing execution data (e.g. Across without deposit params).
+			if len(bridgeRoute.Hops) == 0 || !hopIsExecutable(bridgeRoute.Hops[len(bridgeRoute.Hops)-1]) {
+				continue
+			}
+
+			// Step 3: DEX swap on destination chain: intermediate → dstToken.
+			bridgeOut := firstNonEmpty(bridgeRoute.EstimatedOutputAmount, step1.EstimatedOutputAmount)
 				step3, err := da.GetQuote(ctx, dex.QuoteRequest{
 					TokenInChainID:  req.Destination.ChainID,
 					TokenOutChainID: req.Destination.ChainID,
@@ -576,6 +979,7 @@ func quoteSwapBridgeSwap(ctx context.Context, adapters []bridges.Adapter, dexAda
 					TokenOut:        req.Destination.TokenAddress,
 					Amount:          bridgeOut,
 					Swapper:         req.Destination.Address,
+					MaxSlippageBps:  compSlippage,
 				})
 				if err != nil {
 					continue
@@ -637,6 +1041,65 @@ func quoteSwapBridgeSwap(ctx context.Context, adapters []bridges.Adapter, dexAda
 	return out, nil
 }
 
+// hopIsExecutable returns true when a bridge hop carries enough provider_data to build
+// an on-chain transaction via PopulateStepTransaction. It rejects hops that only have
+// a quote (e.g. Across routes where the /swap/approval response omitted deposit params).
+func hopIsExecutable(h models.Hop) bool {
+	if h.HopType == models.HopTypeSwap {
+		return true // swap hops: execution data is embedded in provider_data by DEX adapters
+	}
+	if len(h.ProviderData) == 0 {
+		return false
+	}
+	var pd map[string]json.RawMessage
+	if err := json.Unmarshal(h.ProviderData, &pd); err != nil {
+		return false
+	}
+	protocol := ""
+	if raw, ok := pd["protocol"]; ok {
+		_ = json.Unmarshal(raw, &protocol)
+	}
+	switch protocol {
+	case "across_v3":
+		// bridgeable / bridgeableToBridgeable: deposit params are fetched fresh at build time
+		// via /suggested-fees, so a missing deposit in cached provider_data is OK.
+		dep, ok := pd["deposit"]
+		if ok && len(dep) > 0 && string(dep) != "null" {
+			return true
+		}
+		// "bridgeableToBridgeable": same symbol, different chain addresses (e.g. USDC Arb→Polygon).
+		// /swap/approval returns no deposit, but /suggested-fees always works for these.
+		crossType := ""
+		if raw, ok2 := pd["cross_swap_type"]; ok2 {
+			_ = json.Unmarshal(raw, &crossType)
+		}
+		if crossType == "bridgeableToBridgeable" || crossType == "bridgeable" {
+			return true
+		}
+		// anyToBridgeable: pre-built swapTx from Across
+		swapTx, ok3 := pd["swap_tx"]
+		return ok3 && len(swapTx) > 0 && string(swapTx) != "null"
+	case "circle_cctp":
+		_, hasSrc := pd["token_messenger_src"]
+		_, hasBurn := pd["burn_token"]
+		return hasSrc && hasBurn
+	case "canonical":
+		_, hasL1 := pd["l1_bridge"]
+		_, hasL1Inbox := pd["l1_inbox"]
+		return hasL1 || hasL1Inbox
+	case "layerzero_stargate_v2":
+		_, hasSrc := pd["src_chain_key"]
+		_, hasDst := pd["dst_chain_key"]
+		return hasSrc && hasDst
+	case "mayan_swift", "mayan_wh", "mayan_mctp", "mayan_fast_mctp":
+		return true // Mayan tx-builder provides pre-built transactions at execution time
+	case "blockdaemon_defi_api":
+		return false // aggregator quote-only; no direct deposit call
+	default:
+		return false
+	}
+}
+
 // QuoteWithDEX wraps Quote and, when no bridge routes are available, falls back to a
 // same-chain DEX swap using the provided dex.Adapter. It returns a single synthetic
 // Route representing the swap.
@@ -657,12 +1120,17 @@ func QuoteWithDEX(ctx context.Context, adapters []bridges.Adapter, dexAdapter de
 		return nil, ErrNoRoutes
 	}
 
+	fallbackSlippage := 0
+	if req.Preferences != nil {
+		fallbackSlippage = req.Preferences.MaxSlippageBps
+	}
 	dq, derr := dexAdapter.GetQuote(ctx, dex.QuoteRequest{
 		TokenInChainID:  req.Source.ChainID,
 		TokenOutChainID: req.Destination.ChainID,
 		TokenIn:         req.Source.TokenAddress,
 		TokenOut:        req.Destination.TokenAddress,
 		Amount:          firstNonEmpty(req.AmountBaseUnits, req.Amount),
+		MaxSlippageBps:  fallbackSlippage,
 	})
 	if derr != nil {
 		log.Printf("[router] dex quote err=%s", truncateForLog(derr.Error(), maxLogErrorLen))

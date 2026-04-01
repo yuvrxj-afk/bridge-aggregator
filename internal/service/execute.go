@@ -18,6 +18,8 @@ var (
 	ErrUnknownBridgeID = errors.New("route hop bridge_id is not a registered adapter")
 	ErrNoBridgeHop     = errors.New("route must contain at least one bridge hop")
 	ErrInvalidStatus   = errors.New("status must be one of: submitted, completed, failed")
+	ErrInvalidTransition = errors.New("invalid operation status transition")
+	ErrTxHashRequired = errors.New("tx_hash is required when status=submitted")
 )
 
 var validTransitionStatuses = map[string]bool{
@@ -116,6 +118,8 @@ func GetOperation(ctx context.Context, s *store.Store, id string) (*models.Opera
 		ClientReferenceID: op.ClientReferenceID,
 		CreatedAt:         op.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:         op.UpdatedAt.Format(time.RFC3339),
+		NextAction:        nextAction(op.Status),
+		RecoveryHints:     recoveryHints(op.Status, op.TxHash),
 	}, nil
 }
 
@@ -125,8 +129,105 @@ func UpdateOperationStatus(ctx context.Context, s *store.Store, id string, req m
 	if !validTransitionStatuses[req.Status] {
 		return ErrInvalidStatus
 	}
+	op, err := s.GetOperation(id)
+	if err != nil {
+		return err
+	}
+	if op == nil {
+		return store.ErrNotFound
+	}
+	if req.Status == models.OperationStatusSubmitted && req.TxHash == "" {
+		return ErrTxHashRequired
+	}
+	if !isValidTransition(op.Status, req.Status) {
+		return ErrInvalidTransition
+	}
 	if err := s.UpdateOperationStatus(id, req.Status, req.TxHash); err != nil {
 		return err
 	}
 	return nil
+}
+
+// GetOperationEvents returns persisted lifecycle events for recovery/audit.
+func GetOperationEvents(ctx context.Context, s *store.Store, id string, limit int) ([]models.OperationEventResponse, error) {
+	_ = ctx
+	op, err := s.GetOperation(id)
+	if err != nil {
+		return nil, err
+	}
+	if op == nil {
+		return nil, store.ErrNotFound
+	}
+	events, err := s.ListOperationEvents(id, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]models.OperationEventResponse, 0, len(events))
+	for _, e := range events {
+		out = append(out, models.OperationEventResponse{
+			ID:         e.ID,
+			EventType:  e.EventType,
+			FromStatus: e.FromStatus,
+			ToStatus:   e.ToStatus,
+			TxHash:     e.TxHash,
+			Metadata:   e.Metadata,
+			CreatedAt:  e.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	return out, nil
+}
+
+func isValidTransition(from, to string) bool {
+	switch from {
+	case models.OperationStatusPending:
+		return to == models.OperationStatusSubmitted || to == models.OperationStatusFailed
+	case models.OperationStatusSubmitted:
+		return to == models.OperationStatusCompleted || to == models.OperationStatusFailed
+	case models.OperationStatusCompleted, models.OperationStatusFailed:
+		return false
+	default:
+		return false
+	}
+}
+
+func nextAction(status string) string {
+	switch status {
+	case models.OperationStatusPending:
+		return "submit_source_transaction"
+	case models.OperationStatusSubmitted:
+		return "wait_for_confirmation_or_bridge_completion"
+	case models.OperationStatusCompleted:
+		return "none"
+	case models.OperationStatusFailed:
+		return "retry_or_requote"
+	default:
+		return "inspect_operation"
+	}
+}
+
+func recoveryHints(status, txHash string) []string {
+	switch status {
+	case models.OperationStatusPending:
+		return []string{
+			"Use /api/v1/route/buildTransaction or /api/v1/route/stepTransaction to get executable tx data.",
+			"After wallet submission, PATCH status to submitted with tx_hash.",
+		}
+	case models.OperationStatusSubmitted:
+		hints := []string{
+			"Poll destination bridge explorer or provider UI for fill/finality.",
+			"When final settlement succeeds, PATCH status to completed.",
+			"If transaction reverted or bridge failed irrecoverably, PATCH status to failed.",
+		}
+		if txHash == "" {
+			hints = append(hints, "Missing tx_hash: include tx_hash on submitted status for reliable recovery.")
+		}
+		return hints
+	case models.OperationStatusFailed:
+		return []string{
+			"Re-quote before retrying to avoid stale fees/deadlines.",
+			"Use idempotency_key on /execute for safe client retries.",
+		}
+	default:
+		return nil
+	}
 }

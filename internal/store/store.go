@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"bridge-aggregator/internal/models"
@@ -15,6 +16,8 @@ type Store struct {
 	DB *sql.DB
 }
 
+var ErrNotFound = errors.New("not found")
+
 // Operation represents a bridge operation we track.
 type Operation struct {
 	ID                string
@@ -25,6 +28,18 @@ type Operation struct {
 	TxHash            string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+}
+
+// OperationEvent is an immutable event entry for operation lifecycle changes.
+type OperationEvent struct {
+	ID          int64
+	OperationID string
+	EventType   string
+	FromStatus  string
+	ToStatus    string
+	TxHash      string
+	Metadata    string
+	CreatedAt   time.Time
 }
 
 // NewStore connects to Postgres and ensures the schema exists.
@@ -61,6 +76,20 @@ CREATE INDEX IF NOT EXISTS operations_idempotency_key_idx
   ON operations(idempotency_key)
   WHERE idempotency_key IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS operation_events (
+  id BIGSERIAL PRIMARY KEY,
+  operation_id TEXT NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL,
+  from_status TEXT,
+  to_status TEXT,
+  tx_hash TEXT,
+  metadata JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS operation_events_operation_id_idx
+  ON operation_events(operation_id, created_at DESC);
+
 -- Migration: add tx_hash column to existing deployments (safe no-op if already present).
 ALTER TABLE operations ADD COLUMN IF NOT EXISTS tx_hash TEXT;
 `
@@ -90,12 +119,23 @@ RETURNING created_at, updated_at;
 	if err := row.Scan(&op.CreatedAt, &op.UpdatedAt); err != nil {
 		return nil, err
 	}
+	if err := s.AppendOperationEvent(op.ID, "created", "", op.Status, "", `{"source":"execute"}`); err != nil {
+		return nil, err
+	}
 	return &op, nil
 }
 
 // UpdateOperationStatus sets the status (and optionally tx_hash) for an operation.
 // Valid statuses: pending, submitted, completed, failed.
 func (s *Store) UpdateOperationStatus(id, status, txHash string) error {
+	cur, err := s.GetOperation(id)
+	if err != nil {
+		return err
+	}
+	if cur == nil {
+		return sql.ErrNoRows
+	}
+
 	const q = `
 UPDATE operations
 SET status = $2, tx_hash = COALESCE(NULLIF($3, ''), tx_hash), updated_at = now()
@@ -108,6 +148,9 @@ WHERE id = $1;
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return sql.ErrNoRows
+	}
+	if err := s.AppendOperationEvent(id, "status_transition", cur.Status, status, txHash, `{"source":"patch_status"}`); err != nil {
+		return err
 	}
 	return nil
 }
@@ -185,4 +228,43 @@ func nullIfEmpty(s string) any {
 		return nil
 	}
 	return s
+}
+
+// AppendOperationEvent appends an immutable lifecycle event.
+func (s *Store) AppendOperationEvent(operationID, eventType, fromStatus, toStatus, txHash, metadata string) error {
+	const q = `
+INSERT INTO operation_events (operation_id, event_type, from_status, to_status, tx_hash, metadata)
+VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), NULLIF($5,''), NULLIF($6,'')::jsonb);
+`
+	_, err := s.DB.Exec(q, operationID, eventType, fromStatus, toStatus, txHash, metadata)
+	return err
+}
+
+// ListOperationEvents returns operation lifecycle events newest-first.
+func (s *Store) ListOperationEvents(operationID string, limit int) ([]OperationEvent, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	const q = `
+SELECT id, operation_id, event_type, COALESCE(from_status,''), COALESCE(to_status,''), COALESCE(tx_hash,''), COALESCE(metadata::text,'{}'), created_at
+FROM operation_events
+WHERE operation_id = $1
+ORDER BY created_at DESC
+LIMIT $2;
+`
+	rows, err := s.DB.Query(q, operationID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]OperationEvent, 0, limit)
+	for rows.Next() {
+		var e OperationEvent
+		if err := rows.Scan(&e.ID, &e.OperationID, &e.EventType, &e.FromStatus, &e.ToStatus, &e.TxHash, &e.Metadata, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
