@@ -16,10 +16,11 @@ COPY apps/web ./apps/web
 ARG VITE_WALLETCONNECT_PROJECT_ID=
 ENV VITE_WALLETCONNECT_PROJECT_ID=$VITE_WALLETCONNECT_PROJECT_ID
 
-# Build explicitly (no script indirection) and assert output folder exists.
-RUN bun pm untrusted \
- && bun --cwd apps/web run build \
- && test -d apps/web/dist
+# Build bundle directly and assert output folder exists.
+# Keep type-checking in separate CI/lint step to avoid deployment blocking.
+RUN cd apps/web \
+ && bunx vite build \
+ && test -d dist
 
 # ── Runtime ─────────────────────────────────────────────
 FROM nginx:1.27-alpine
