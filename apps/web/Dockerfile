@@ -31,7 +31,7 @@ COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
 COPY apps/web/nginx.conf /etc/nginx/templates/default.conf.template
 
 ENV API_UPSTREAM=api:8080
-ENV API_TESTNET_UPSTREAM=api-testnet:8080
+ENV API_TESTNET_UPSTREAM=api:8080
 
 EXPOSE 80
 
