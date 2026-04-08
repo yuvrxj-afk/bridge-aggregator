@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useAccount } from "wagmi";
 import { ChainIcon } from "./ChainIcon";
 import { fetchAdapterHealth, fetchOperations, type AdapterHealth, type OperationDetail } from "../api";
 import { formatUnits } from "viem";
@@ -436,6 +437,7 @@ function RecentActivity({ ops }: { ops: OperationDetail[] }) {
 // ── Main component ───────────────────────────────────────────────────────────
 
 export function OperationsDashboard() {
+  const { address: walletAddress } = useAccount();
   const [tab, setTab] = useState<TabKey>("active");
   const [ops, setOps] = useState<OperationDetail[]>([]);
   const [opsLoading, setOpsLoading] = useState(true);
@@ -457,9 +459,14 @@ export function OperationsDashboard() {
     return () => window.removeEventListener("chain-scope-change", handler);
   }, []);
 
-  const loadOps = useCallback(async (cancelled: { v: boolean }, scope: string) => {
+  const loadOps = useCallback(async (cancelled: { v: boolean }, scope: string, wallet: string) => {
+    if (!wallet) {
+      setOps([]);
+      setOpsLoading(false);
+      return;
+    }
     try {
-      const data = await fetchOperations(50, scope);
+      const data = await fetchOperations(wallet, 50, scope);
       if (cancelled.v) return;
       setOps(data.operations ?? []);
       setOpsError(null);
@@ -472,18 +479,19 @@ export function OperationsDashboard() {
   }, []);
 
   useEffect(() => {
+    const wallet = walletAddress ?? "";
     const cancelled = { v: false };
-    loadOps(cancelled, chainScope);
-    const id = window.setInterval(() => loadOps(cancelled, chainScope), 10_000);
+    loadOps(cancelled, chainScope, wallet);
+    const id = window.setInterval(() => loadOps(cancelled, chainScope, wallet), 10_000);
     // Refresh immediately when any operation status changes (fired by ExecutePanel / PendingClaimsBanner).
-    const onUpdate = () => loadOps(cancelled, chainScope);
+    const onUpdate = () => loadOps(cancelled, chainScope, wallet);
     window.addEventListener("operation-updated", onUpdate);
     return () => {
       cancelled.v = true;
       window.clearInterval(id);
       window.removeEventListener("operation-updated", onUpdate);
     };
-  }, [loadOps, chainScope]);
+  }, [loadOps, chainScope, walletAddress]);
 
   useEffect(() => {
     let cancelled = false;

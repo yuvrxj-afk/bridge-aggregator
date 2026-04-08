@@ -106,7 +106,7 @@ func filterMinInputValue(ctx context.Context, routes []models.Route) []models.Ro
 	}
 	prices, err := fetchReferencePricesUSD(ctx)
 	if err != nil || len(prices) == 0 {
-		return routes
+		prices = stablecoinFallbackPrices
 	}
 	out := make([]models.Route, 0, len(routes))
 	for _, r := range routes {
@@ -142,6 +142,15 @@ var coingeckoIDBySymbol = map[string]string{
 	"WBTC":   "wrapped-bitcoin",
 }
 
+// stablecoinFallbackPrices provides a hardcoded $1.00 price for known stablecoins
+// when CoinGecko is unavailable. This keeps USD sanity filtering active for the
+// most common bridging assets even during price API outages.
+var stablecoinFallbackPrices = map[string]float64{
+	"usd-coin": 1.0,
+	"tether":   1.0,
+	"dai":      1.0,
+}
+
 // filterSaneRoutesWithReference enforces strict market sanity on top of numeric sanity.
 // It drops routes whose implied USD value is wildly off relative to source input.
 func filterSaneRoutesWithReference(ctx context.Context, routes []models.Route) []models.Route {
@@ -150,8 +159,9 @@ func filterSaneRoutesWithReference(ctx context.Context, routes []models.Route) [
 	}
 	prices, err := fetchReferencePricesUSD(ctx)
 	if err != nil || len(prices) == 0 {
-		// Fail-open on reference API outage; numeric sanity already applied.
-		return routes
+		// CoinGecko unavailable — apply stablecoin fallback so sanity filtering
+		// still works for the most common bridging tokens (USDC, USDT, DAI).
+		prices = stablecoinFallbackPrices
 	}
 
 	out := make([]models.Route, 0, len(routes))

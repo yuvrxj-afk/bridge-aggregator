@@ -272,44 +272,6 @@ const APPROVE_SELECTOR = "0x095ea7b3";
 // keccak256("MessageSent(bytes)") — emitted by TokenMessenger on depositForBurn.
 const MESSAGE_SENT_TOPIC = "0x8c5261668696ce22758910d05bab8f186d6eb247ceac2af2e82c7dc17669b036";
 
-const RECEIVE_MESSAGE_ABI = [{
-  name: "receiveMessage",
-  type: "function",
-  stateMutability: "nonpayable",
-  inputs: [
-    { name: "message", type: "bytes" },
-    { name: "attestation", type: "bytes" },
-  ],
-  outputs: [{ name: "success", type: "bool" }],
-}] as const;
-
-// Polls Circle Iris via our backend proxy (/api/v1/cctp/attestation/:messageHash).
-// Proxying avoids CORS restrictions on direct browser calls to iris-api.circle.com.
-async function pollCCTPAttestation(
-  messageHash: string,
-  onAttempt: (n: number) => void,
-  maxAttempts = 180,   // 180 × 10s = 30 minutes (testnet sandbox can be slow)
-  intervalMs = 10000,
-): Promise<string> {
-  for (let i = 0; i < maxAttempts; i++) {
-    onAttempt(i + 1);
-    try {
-      const res = await fetch(`/api/v1/cctp/attestation/${messageHash}`);
-      if (res.ok) {
-        const body = await res.json() as { status?: string; attestation?: string };
-        if (body.status === "complete" && body.attestation) {
-          return body.attestation;
-        }
-      }
-      // 404 = not yet attested; any other non-ok status = keep polling
-    } catch { /* transient error — keep polling */ }
-    await new Promise<void>(r => setTimeout(r, intervalMs));
-  }
-  throw new Error(
-    "CCTP attestation timed out (30 min). The USDC burn is on-chain. Visit https://cctp.money to claim manually.",
-  );
-}
-
 // ── Allowance helpers ─────────────────────────────────────────────────────────
 
 function resolveApprovalInfo(
@@ -501,7 +463,16 @@ function hasDestinationSideSwap(route: Route): boolean {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: number }) {
+export function ExecutePanel({
+  route,
+  quotedAt,
+  onTryNextRoute,
+}: {
+  route: Route;
+  quotedAt?: number;
+  /** Called when the user wants to fall back to the next-ranked route after a failure. */
+  onTryNextRoute?: () => void;
+}) {
   const navigate = useNavigate();
   const { address: walletAddress } = useAccount();
   const currentChainId = useChainId();
@@ -680,12 +651,12 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
     const poll = async () => {
       try {
         const bal: bigint = isNativeWatch
-          ? await dstPublicClient.getBalance({ address: asAddr(walletAddress) })
+          ? await dstPublicClient.getBalance({ address: asAddr(walletAddress!) })
           : await dstPublicClient.readContract({
               address: asAddr(watchToken),
               abi: ERC20_BALANCE_ABI,
               functionName: "balanceOf",
-              args: [asAddr(walletAddress)],
+              args: [asAddr(walletAddress!)],
             }) as bigint;
         if (initialBalance === null) { initialBalance = bal; return; }
         if (bal > initialBalance) setBridgeSettled(true);
@@ -738,14 +709,14 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
         const token = tokenAddress(srcChainId, srcHop.from_asset);
         let balance = 0n;
         if (token && token !== ZERO_ADDRESS) {
-          balance = await publicClient.readContract({
+          balance = await publicClient!.readContract({
             address: asAddr(token),
             abi: ERC20_BALANCE_ABI,
             functionName: "balanceOf",
-            args: [asAddr(walletAddress)],
+            args: [asAddr(walletAddress!)],
           }) as bigint;
         } else {
-          balance = await publicClient.getBalance({ address: asAddr(walletAddress) });
+          balance = await publicClient!.getBalance({ address: asAddr(walletAddress!) });
         }
         if (balance < required) {
           throw new Error(
@@ -763,7 +734,7 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
       if (canUseLiFi && !useMultiStep) {
         // ── LiFi Diamond path ──
         setPhase("preparing");
-        const resp = await fetchBuildTransaction(route, walletAddress);
+        const resp = await fetchBuildTransaction(route, walletAddress!);
 
         const sendingAsset = resp.bridge_data?.sendingAssetId ?? "";
         const minAmount = BigInt(resp.bridge_data?.minAmount ?? "0");
@@ -772,11 +743,11 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
         const chainId = resp.chain_id || undefined;
 
         if (!isNative && minAmount > 0n) {
-          const allowance = await publicClient.readContract({
+          const allowance = await publicClient!.readContract({
             address: asAddr(sendingAsset),
             abi: ERC20_ALLOWANCE_ABI,
             functionName: "allowance",
-            args: [asAddr(walletAddress), asAddr(diamond)],
+            args: [asAddr(walletAddress!), asAddr(diamond)],
           }) as bigint;
 
           if (allowance < minAmount) {
@@ -791,7 +762,7 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
             });
             setApproveTxHash(aHash);
             setPhase("confirming");
-            await publicClient.waitForTransactionReceipt({ hash: aHash, retryCount: 60 });
+            await publicClient!.waitForTransactionReceipt({ hash: aHash, retryCount: 60 });
           }
         }
 
@@ -845,18 +816,15 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
           if (allSteps.length === 0) throw new Error(`No execution steps returned for hop ${hopIdx + 1}`);
           const hopChainId = chainIdOf(hop.from_chain) || undefined;
           const isCCTP = data.bridge_params?.protocol === "circle_cctp";
-          // Holds CCTP message bytes + attestation obtained after depositForBurn confirms.
-          let cctpClaimData: { messageBytes: `0x${string}`; attestation: `0x${string}` } | null = null;
-
           for (const step of allSteps) {
             if (step.step_type === "approve") {
               const info = resolveApprovalInfo(step);
               if (info) {
-                const onChain = await publicClient.readContract({
+                const onChain = await publicClient!.readContract({
                   address: asAddr(info.token),
                   abi: ERC20_ALLOWANCE_ABI,
                   functionName: "allowance",
-                  args: [asAddr(walletAddress), asAddr(info.spender)],
+                  args: [asAddr(walletAddress!), asAddr(info.spender)],
                 }) as bigint;
 
                 if (onChain >= info.amount) continue;
@@ -871,7 +839,7 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
                 });
                 setApproveTxHash(aHash);
                 setPhase("confirming");
-                await publicClient.waitForTransactionReceipt({ hash: aHash, retryCount: 60 });
+                await publicClient!.waitForTransactionReceipt({ hash: aHash, retryCount: 60 });
                 continue;
               }
 
@@ -879,7 +847,7 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
               const aHash = await sendBridgeStep(step, sendTransactionAsync, writeContractAsync);
               setApproveTxHash(aHash);
               setPhase("confirming");
-              await publicClient.waitForTransactionReceipt({ hash: aHash, retryCount: 60 });
+              await publicClient!.waitForTransactionReceipt({ hash: aHash, retryCount: 60 });
               continue;
             }
 
@@ -893,7 +861,7 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
               // return later to complete receiveMessage when attestation is ready.
               if (isCCTP) {
                 setPhase("cctp_waiting_attestation");
-                const receipt = await publicClient.waitForTransactionReceipt({ hash, retryCount: 60 });
+                const receipt = await publicClient!.waitForTransactionReceipt({ hash, retryCount: 60 });
                 const sentLog = receipt.logs.find(
                   l => l.topics[0]?.toLowerCase() === MESSAGE_SENT_TOPIC,
                 );
@@ -930,28 +898,6 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
               continue;
             }
 
-            // CCTP claim step: switch to destination chain, call receiveMessage.
-            if (step.step_type === "claim" && isCCTP) {
-              if (!cctpClaimData || !step.tx?.contract) {
-                throw new Error("CCTP: claim data unavailable — deposit may not have been mined");
-              }
-              const claimChainId = step.tx.chain_id;
-              if (claimChainId && currentChainId !== claimChainId) {
-                await switchChainAsync({ chainId: claimChainId });
-              }
-              setPhase("cctp_claiming");
-              const claimHash = await writeContractAsync({
-                address: asAddr(step.tx.contract),
-                abi: RECEIVE_MESSAGE_ABI,
-                functionName: "receiveMessage",
-                args: [cctpClaimData.messageBytes, cctpClaimData.attestation],
-                chainId: claimChainId || undefined,
-              });
-              setTxHash(claimHash);
-              setCctpClaimDone(true);
-              cctpClaimData = null;
-              continue;
-            }
           }
 
           // After a bridge deposit: if the next hop runs on a different chain (destination swap),
@@ -1057,16 +1003,16 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
       try {
         const hints: ApprovalHint[] = [];
         if (canUseLiFi && !useMultiStep) {
-          const resp = await fetchBuildTransaction(route, walletAddress);
+          const resp = await fetchBuildTransaction(route, walletAddress!);
           const token = (resp.bridge_data?.sendingAssetId ?? "").toLowerCase();
           const required = BigInt(resp.bridge_data?.minAmount ?? "0");
           const spender = (resp.diamond ?? "").toLowerCase();
           if (token && token !== ZERO_ADDRESS && spender && required > 0n) {
-            const allowance = await publicClient.readContract({
+            const allowance = await publicClient!.readContract({
               address: asAddr(token),
               abi: ERC20_ALLOWANCE_ABI,
               functionName: "allowance",
-              args: [asAddr(walletAddress), asAddr(spender)],
+              args: [asAddr(walletAddress!), asAddr(spender)],
             }) as bigint;
             hints.push({ token, spender, required, allowance, chainId: srcChainId });
           }
@@ -1081,11 +1027,11 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
               const token = info.token.toLowerCase();
               const spender = info.spender.toLowerCase();
               if (!token || !spender || token === ZERO_ADDRESS) continue;
-              const allowance = await publicClient.readContract({
+              const allowance = await publicClient!.readContract({
                 address: asAddr(token),
                 abi: ERC20_ALLOWANCE_ABI,
                 functionName: "allowance",
-                args: [asAddr(walletAddress), asAddr(spender)],
+                args: [asAddr(walletAddress!), asAddr(spender)],
               }) as bigint;
               hints.push({ token, spender, required: info.amount, allowance, chainId: srcChainId });
             }
@@ -1095,7 +1041,7 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
 
         // ── Gas estimation ──
         try {
-          const gp = await publicClient.getGasPrice();
+          const gp = await publicClient!.getGasPrice();
           if (!cancelled) setGasPrice(gp);
           if (canUseLiFi && !useMultiStep) {
             // LiFi path: try to estimate gas using the encoded calldata from buildTransaction.
@@ -1382,6 +1328,15 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
                   style={{ backgroundColor: "rgba(190,194,255,0.10)", border: "1px solid rgba(190,194,255,0.20)", color: "#908fa1" }}
                 >
                   Start Over
+                </button>
+              )}
+              {onTryNextRoute && (phase === "error_terminal" || phase === "error_retryable") && (
+                <button
+                  onClick={onTryNextRoute}
+                  className="text-[11px] font-mono uppercase tracking-wider px-3 py-1.5"
+                  style={{ backgroundColor: "rgba(74,222,128,0.10)", border: "1px solid rgba(74,222,128,0.25)", color: "#4ade80" }}
+                >
+                  Try Next Route →
                 </button>
               )}
             </div>

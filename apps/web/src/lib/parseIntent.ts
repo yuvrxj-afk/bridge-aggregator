@@ -138,8 +138,8 @@ export function parseIntent(text: string): ParsedIntent | null {
 
   return {
     amount,
-    srcToken,
-    dstToken,
+    srcToken: srcToken!,
+    dstToken: dstToken!,
     srcChain: srcChain ?? "",
     dstChain: dstChain ?? srcChain ?? "",
   };

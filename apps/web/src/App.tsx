@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Routes, Route, NavLink, Link, useNavigate } from "react-router-dom";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { useSwitchChain } from "wagmi";
+import { useAccount, useSwitchChain } from "wagmi";
 import { motion, AnimatePresence } from "framer-motion";
 import { QuoteForm } from "./components/QuoteForm";
 import { RouteCard } from "./components/RouteCard";
@@ -10,7 +10,7 @@ import { OperationsDashboard } from "./components/OperationsDashboard";
 import { PendingClaimsBanner } from "./components/PendingClaimsBanner";
 import { IntentPanel } from "./components/IntentPanel";
 import { ExecutePage } from "./pages/ExecutePage";
-import { type Route as BridgeRoute } from "./api";
+import { fetchOperations, type Route as BridgeRoute, type OperationDetail } from "./api";
 import { VISIBLE_PROVIDERS } from "./config/providers";
 import { type ParsedIntent } from "./lib/parseIntent";
 
@@ -37,17 +37,7 @@ function SwapPage() {
   const [error, setError] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<"best" | "cheapest" | "fastest">("best");
   const [quotedAt, setQuotedAt] = useState<number | null>(null);
-  const [chainScope, setChainScope] = useState<ChainScope>(() => readChainScope());
   const [pendingIntent, setPendingIntent] = useState<ParsedIntent | null>(null);
-
-  useEffect(() => {
-    const onScope = (e: Event) => {
-      const detail = (e as CustomEvent<ChainScope>).detail;
-      if (detail === "mainnet" || detail === "testnet") setChainScope(detail);
-    };
-    window.addEventListener("chain-scope-change", onScope);
-    return () => window.removeEventListener("chain-scope-change", onScope);
-  }, []);
 
   // Listen for intents dispatched by IntentPanel.
   useEffect(() => {
@@ -456,8 +446,31 @@ function NetworkToggle({ chainScope, onChange }: { chainScope: ChainScope; onCha
 }
 
 function TerminalLayout({ children }: { children: ReactNode }) {
+  const { address } = useAccount();
   const [chainScope, setChainScope] = useState<ChainScope>(() => readChainScope());
   const [intentOpen, setIntentOpen] = useState(false);
+  const [resumableOps, setResumableOps] = useState<OperationDetail[]>([]);
+  const [resumeDismissed, setResumeDismissed] = useState(false);
+  const prevAddress = useRef<string | undefined>(undefined);
+
+  // Session-resume: when wallet connects, query for incomplete multi-step operations.
+  useEffect(() => {
+    if (!address || address === prevAddress.current) return;
+    prevAddress.current = address;
+    setResumeDismissed(false);
+    fetchOperations(address, 20, chainScope)
+      .then(({ operations }) => {
+        const pending = operations.filter(
+          (op) =>
+            op.status === "submitted" &&
+            ["guided_two_step", "async_claim"].includes(
+              (op.route as { execution?: { intent?: string } })?.execution?.intent ?? "",
+            ),
+        );
+        setResumableOps(pending);
+      })
+      .catch(() => { /* silently ignore — resume is best-effort */ });
+  }, [address, chainScope]);
 
   useEffect(() => {
     const onScope = (e: Event) => {
@@ -485,6 +498,31 @@ function TerminalLayout({ children }: { children: ReactNode }) {
         </div>
       )}
       <PendingClaimsBanner chainScope={chainScope} />
+      {resumableOps.length > 0 && !resumeDismissed && (
+        <div className="w-full bg-[#1a1f2e] border-b border-[#bec2ff]/30 px-4 py-2 flex items-center justify-between gap-4">
+          <span className="text-[11px] font-mono text-[#bec2ff]">
+            {resumableOps.length === 1
+              ? "You have 1 incomplete transfer waiting to be claimed."
+              : `You have ${resumableOps.length} incomplete transfers waiting to be claimed.`}
+          </span>
+          <div className="flex items-center gap-3 shrink-0">
+            <NavLink
+              to="/operations"
+              className="text-[11px] font-mono underline text-[#bec2ff] hover:text-white"
+              onClick={() => setResumeDismissed(true)}
+            >
+              Resume →
+            </NavLink>
+            <button
+              type="button"
+              onClick={() => setResumeDismissed(true)}
+              className="text-[11px] font-mono text-[#908fa1] hover:text-[#e5e2e1]"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
       <header className="sticky top-0 z-50 h-16 backdrop-blur bg-[#131313]/70 border-b border-[#2a2a2a] flex items-center">
         <div className="max-w-7xl mx-auto w-full px-6 flex items-center justify-between">
           <Link

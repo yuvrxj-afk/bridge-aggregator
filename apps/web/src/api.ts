@@ -208,10 +208,16 @@ export class BridgeError extends Error {
 
 type ApiErrorBody = { error?: { message?: string; error_type?: string; error_code?: string } };
 
+const API_KEY = import.meta.env.VITE_API_KEY as string | undefined;
+
+function authHeaders(): Record<string, string> {
+  return API_KEY ? { "X-API-Key": API_KEY } : {};
+}
+
 async function apiFetch<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${getBase()}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   const data = await res.json() as ApiErrorBody;
@@ -341,9 +347,9 @@ export interface OperationDetail {
   events?: OperationEvent[];
 }
 
-// List recent operations (newest-first).
-export function fetchOperations(limit = 50, scope?: string): Promise<{ operations: OperationDetail[] }> {
-  const params = new URLSearchParams({ limit: String(limit) });
+// List recent operations for a wallet address (newest-first). wallet is required.
+export function fetchOperations(wallet: string, limit = 50, scope?: string): Promise<{ operations: OperationDetail[] }> {
+  const params = new URLSearchParams({ wallet, limit: String(limit) });
   if (scope) params.set("scope", scope);
   return apiGet(`/operations?${params}`);
 }
@@ -360,7 +366,7 @@ export function createOperation(route: Route, idempotencyKey?: string): Promise<
 export function patchOperationStatus(operationId: string, status: string, txHash?: string): Promise<void> {
   return fetch(`${getBase()}/operations/${operationId}/status`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ status, ...(txHash && { tx_hash: txHash }) }),
   }).then(() => undefined);
 }

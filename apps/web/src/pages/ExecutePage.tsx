@@ -89,7 +89,15 @@ export function ExecutePage() {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.18, ease: "easeOut" }}
           >
-            <ExecutePanel route={selected} quotedAt={quotedAt} />
+            <ExecutePanel
+              route={selected}
+              quotedAt={quotedAt}
+              onTryNextRoute={(() => {
+                const idx = routes.findIndex(r => r.route_id === selected.route_id);
+                const next = routes[idx + 1];
+                return next ? () => setSelected(next) : undefined;
+              })()}
+            />
           </motion.div>
         </AnimatePresence>
       </div>

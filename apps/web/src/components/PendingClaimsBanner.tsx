@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { formatUnits } from "viem";
-import { useWriteContract, useSwitchChain, useChainId } from "wagmi";
+import { useWriteContract, useSwitchChain, useChainId, useConfig } from "wagmi";
+import { getPublicClient } from "@wagmi/core";
 import { loadPendingClaims, removePendingClaim, type PendingClaim } from "../lib/pendingClaims";
 import { patchOperationStatus } from "../api";
 
@@ -48,6 +49,7 @@ export function PendingClaimsBanner({ chainScope }: Props) {
   const { writeContractAsync } = useWriteContract();
   const { switchChainAsync } = useSwitchChain();
   const currentChainId = useChainId();
+  const wagmiConfig = useConfig();
 
   // Load claims from localStorage whenever window focuses or component mounts.
   const reload = useCallback(() => {
@@ -108,12 +110,32 @@ export function PendingClaimsBanner({ chainScope }: Props) {
       if (currentChainId !== claim.claimChainId) {
         await switchChainAsync({ chainId: claim.claimChainId });
       }
+
+      // Fetch fresh EIP-1559 fees from the destination chain right before submitting.
+      // Without this, the wallet estimates fees at popup-time which can be stale on
+      // Arbitrum Sepolia and trigger "max fee per gas less than block base fee".
+      let gasOverrides: { maxFeePerGas?: bigint; maxPriorityFeePerGas?: bigint } = {};
+      try {
+        const destClient = getPublicClient(wagmiConfig, { chainId: claim.claimChainId });
+        if (destClient) {
+          const fees = await destClient.estimateFeesPerGas();
+          // 50% buffer on maxFeePerGas to survive base-fee spikes between estimation and inclusion.
+          gasOverrides = {
+            maxFeePerGas: (fees.maxFeePerGas * 150n) / 100n,
+            maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+          };
+        }
+      } catch {
+        // fall through — wallet will estimate; may fail again but worth trying
+      }
+
       const hash = await writeContractAsync({
         address: claim.claimContract as `0x${string}`,
         abi: RECEIVE_MESSAGE_ABI,
         functionName: "receiveMessage",
         args: [claim.messageBytes as `0x${string}`, att as `0x${string}`],
         chainId: claim.claimChainId,
+        ...gasOverrides,
       });
       setClaimStates(prev => ({ ...prev, [claim.id]: { attestation: att, claiming: false, error: null, claimedTx: hash } }));
       // Patch operation to completed if we have a DB tracking ID.
