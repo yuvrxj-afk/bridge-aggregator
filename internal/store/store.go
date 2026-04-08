@@ -263,9 +263,10 @@ VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), NULLIF($5,''), NULLIF($6,'')::json
 	return err
 }
 
-// ListOperations returns the most recent operations, newest-first.
-// network filters by "mainnet" or "testnet"; empty string returns all.
-func (s *Store) ListOperations(limit int, network string) ([]Operation, error) {
+// ListOperations returns the most recent operations for a wallet address, newest-first.
+// wallet filters by the source wallet address stored in route->'source'->>'address'.
+// network optionally filters by "mainnet" or "testnet"; empty string returns all networks.
+func (s *Store) ListOperations(limit int, network, wallet string) ([]Operation, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
@@ -280,20 +281,22 @@ SELECT id, route, status, COALESCE(network,'mainnet'),
        created_at, updated_at
 FROM operations
 WHERE network = $2
+  AND lower(route->'source'->>'address') = lower($3)
 ORDER BY created_at DESC
 LIMIT $1;
 `
-		rows, err = s.DB.Query(q, limit, network)
+		rows, err = s.DB.Query(q, limit, network, wallet)
 	} else {
 		const q = `
 SELECT id, route, status, COALESCE(network,'mainnet'),
        COALESCE(client_reference_id,''), COALESCE(idempotency_key,''), COALESCE(tx_hash,''),
        created_at, updated_at
 FROM operations
+WHERE lower(route->'source'->>'address') = lower($2)
 ORDER BY created_at DESC
 LIMIT $1;
 `
-		rows, err = s.DB.Query(q, limit)
+		rows, err = s.DB.Query(q, limit, wallet)
 	}
 	if err != nil {
 		return nil, err

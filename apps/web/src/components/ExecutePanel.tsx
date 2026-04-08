@@ -1,6 +1,8 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Buffer } from "buffer";
+import { TransactionSuccessModal } from "./TransactionSuccessModal";
 import { formatUnits, encodeFunctionData, encodeAbiParameters, decodeAbiParameters, parseAbiParameters, keccak256, type Abi } from "viem";
 import { useSendTransaction, useWriteContract, useAccount, useChainId, useSwitchChain, usePublicClient } from "wagmi";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
@@ -39,7 +41,7 @@ const EXPLORER: Record<number, string> = {
   1: "https://etherscan.io", 8453: "https://basescan.org",
   42161: "https://arbiscan.io", 10: "https://optimistic.etherscan.io",
   137: "https://polygonscan.com", 43114: "https://snowtrace.io",
-  56: "https://bscscan.com",
+  56: "https://bscscan.com", 900: "https://explorer.solana.com",
   // testnets
   11155111: "https://sepolia.etherscan.io",
   84532:    "https://sepolia.basescan.org",
@@ -500,6 +502,7 @@ function hasDestinationSideSwap(route: Route): boolean {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: number }) {
+  const navigate = useNavigate();
   const { address: walletAddress } = useAccount();
   const currentChainId = useChainId();
   const { switchChainAsync } = useSwitchChain();
@@ -534,6 +537,11 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
   const [cctpClaimDone, setCctpClaimDone] = useState(false);
   // Operation tracking — populated after createOperation succeeds
   const [operationId, setOperationId] = useState("");
+  // Success modal
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  // Bridge elapsed time counter
+  const bridgeSubmittedAtRef = useRef<number | null>(null);
+  const [bridgeElapsedSec, setBridgeElapsedSec] = useState(0);
 
   const srcHop = route.hops[0];
   const dstHop = route.hops[route.hops.length - 1];
@@ -634,6 +642,26 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
         .catch(() => undefined);
     }
   }, [phase, txHash, operationId]);
+
+  // ── Success modal ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (phase === "done" && txHash) setShowSuccessModal(true);
+  }, [phase, txHash]);
+
+  // ── Bridge elapsed time ────────────────────────────────────────────────────
+  useEffect(() => {
+    if (phase === "bridge_submitted") {
+      bridgeSubmittedAtRef.current = Date.now();
+      setBridgeElapsedSec(0);
+      const id = setInterval(() => {
+        setBridgeElapsedSec(Math.floor((Date.now() - (bridgeSubmittedAtRef.current ?? Date.now())) / 1000));
+      }, 1000);
+      return () => clearInterval(id);
+    } else {
+      bridgeSubmittedAtRef.current = null;
+      setBridgeElapsedSec(0);
+    }
+  }, [phase]);
 
   // ── Bridge settlement polling ─────────────────────────────────────────────
   // After a bridge deposit, poll the destination chain every 5s until funds arrive.
@@ -1096,7 +1124,22 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
   }, [walletAddress, publicClient, route, canUseLiFi, useMultiStep, executionSupported, canExecute, srcChainId]);
 
 
+  const modalExplorerUrl = explorerTx(cctpClaimDone ? dstChainId : srcChainId, txHash);
+
   return (
+    <>
+    <TransactionSuccessModal
+      open={showSuccessModal}
+      txHash={txHash}
+      srcChain={chainName(srcHop.from_chain)}
+      dstChain={chainName(dstHop.to_chain)}
+      asset={srcHop.from_asset}
+      amount={fmtAmt(srcHop.amount_in_base_units ?? "0", srcDec)}
+      bridgeLabel={bridgeLabel || "Bridge"}
+      explorerUrl={modalExplorerUrl}
+      onViewOps={() => { setShowSuccessModal(false); navigate("/operations"); }}
+      onDone={() => { setShowSuccessModal(false); navigate("/app"); }}
+    />
     <div style={{ border: "1px solid rgba(69,69,85,0.40)", backgroundColor: "#2a2a2a" }}>
 
       {/* ── Header: protocol label + execution badge ── */}
@@ -1464,9 +1507,12 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
                   Funds arrived ✓
                 </span>
               ) : (
-                <span className="text-[11px] font-mono flex items-center gap-1.5" style={{ color: "#908fa1" }}>
+                <span className="text-[11px] font-mono flex items-center gap-1.5"
+                  style={{ color: bridgeElapsedSec > 600 ? "#ff6b6b" : bridgeElapsedSec > 120 ? "#ffb84d" : "#908fa1" }}>
                   <span className="animate-pulse inline-block w-1.5 h-1.5 rounded-full bg-current" />
-                  Polling…
+                  {bridgeElapsedSec > 0
+                    ? `${bridgeElapsedSec < 60 ? `${bridgeElapsedSec}s` : `${Math.floor(bridgeElapsedSec / 60)}m ${bridgeElapsedSec % 60}s`} elapsed`
+                    : "Polling…"}
                 </span>
               )}
             </div>
@@ -1476,12 +1522,12 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
                 {txHash.slice(0, 10)}…{txHash.slice(-6)} ↗
               </a>
               <a href={`${ACROSS_FILL_URL}?depositTxHash=${txHash}`} target="_blank" rel="noopener noreferrer"
-                className="text-[11px] text-outline hover:text-on-surface">Track ↗</a>
+                className="text-[11px] font-semibold text-outline hover:text-on-surface">Track on Across ↗</a>
             </div>
             <p className="text-[11px] text-on-surface-variant leading-relaxed">
               {bridgeSettled
                 ? `Funds confirmed on ${chainName(dstHop.to_chain)}. Switch network and execute the swap below.`
-                : `Waiting for funds on ${chainName(dstHop.to_chain)} (~${route.estimated_time_seconds ?? 60}s). Monitoring balance automatically.`}
+                : `Waiting for funds on ${chainName(dstHop.to_chain)} (~${route.estimated_time_seconds ?? 60}s).`}
             </p>
           </div>
         )}
@@ -1580,5 +1626,6 @@ export function ExecutePanel({ route, quotedAt }: { route: Route; quotedAt?: num
         )}
       </div>
     </div>
+    </>
   );
 }

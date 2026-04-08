@@ -369,3 +369,18 @@ export function patchOperationStatus(operationId: string, status: string, txHash
 export function fetchOperation(operationId: string): Promise<OperationDetail> {
   return apiGet(`/operations/${operationId}`);
 }
+
+// ── Intent parsing ─────────────────────────────────────────────────────────────
+
+export interface ParsedIntentResponse {
+  amount: string
+  src_token: string
+  dst_token: string
+  src_chain: string
+  dst_chain: string
+}
+
+// Parse a natural language intent via the backend OpenRouter integration.
+export function fetchParseIntent(text: string): Promise<ParsedIntentResponse> {
+  return apiFetch<ParsedIntentResponse>("/intent/parse", { text })
+}

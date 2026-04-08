@@ -148,6 +148,12 @@ func (b BaseCanonicalAdapter) GetQuote(ctx context.Context, req models.QuoteRequ
 		return nil, fmt.Errorf("canonical_base: %w", err)
 	}
 
+	// Canonical bridge moves a token between L1 and L2 without swapping.
+	// Source and destination must be the same underlying token.
+	if src.Symbol != dst.Symbol {
+		return nil, fmt.Errorf("canonical_base: cross-token bridging not supported (%s→%s); canonical bridge only moves the same token", src.Symbol, dst.Symbol)
+	}
+
 	// On testnet, Circle's USDC is not registered as an OptimismMintableERC20 — only ETH bridges.
 	// On mainnet, token registrations exist and ERC20s are supported.
 	if canonicalTestnetETHOnly && !isNativeETH(src.Token.Address) {
@@ -214,6 +220,10 @@ func (o OptimismCanonicalAdapter) GetQuote(ctx context.Context, req models.Quote
 		return nil, fmt.Errorf("canonical_optimism: %w", err)
 	}
 
+	if src.Symbol != dst.Symbol {
+		return nil, fmt.Errorf("canonical_optimism: cross-token bridging not supported (%s→%s); canonical bridge only moves the same token", src.Symbol, dst.Symbol)
+	}
+
 	if canonicalTestnetETHOnly && !isNativeETH(src.Token.Address) {
 		return nil, fmt.Errorf("canonical_optimism: only native ETH is supported on testnet via canonical bridge; use CCTP or Across for ERC20 tokens")
 	}
@@ -275,6 +285,10 @@ func (a ArbitrumCanonicalAdapter) GetQuote(ctx context.Context, req models.Quote
 	dst, err := resolveBridgeEndpoint(req.Destination)
 	if err != nil {
 		return nil, fmt.Errorf("canonical_arbitrum: %w", err)
+	}
+
+	if src.Symbol != dst.Symbol {
+		return nil, fmt.Errorf("canonical_arbitrum: cross-token bridging not supported (%s→%s); canonical bridge only moves the same token", src.Symbol, dst.Symbol)
 	}
 
 	if canonicalTestnetETHOnly && !isNativeETH(src.Token.Address) {

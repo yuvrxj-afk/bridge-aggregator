@@ -723,11 +723,21 @@ func quoteBridgeThenSwap(ctx context.Context, adapters []bridges.Adapter, dexAda
 		return nil, errors.New("bridge→swap requires destination chain_id and token_address")
 	}
 
+	// Exclude canonical (L1↔L2 finality) bridges from bridge+swap compositions.
+	// Canonical bridges have ~15-minute finality and only move the same token — they
+	// are not suitable as the bridge leg of a bridge→swap route.
+	var composableAdapters []bridges.Adapter
+	for _, a := range adapters {
+		if !strings.HasPrefix(a.ID(), "canonical_") {
+			composableAdapters = append(composableAdapters, a)
+		}
+	}
+
 	// Quote bridging the source asset across (so we have the bridged token addresses on destination).
 	brReq := req
 	brReq.Destination.Asset = req.Source.Asset
 	brReq.Destination.TokenAddress = "" // bridge adapters determine this internally
-	brRoutes, err := Quote(ctx, adapters, brReq)
+	brRoutes, err := Quote(ctx, composableAdapters, brReq)
 	if err != nil {
 		return nil, err
 	}

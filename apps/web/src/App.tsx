@@ -8,9 +8,11 @@ import { RouteCard } from "./components/RouteCard";
 import { QuoteSummaryCard } from "./components/QuoteSummaryCard";
 import { OperationsDashboard } from "./components/OperationsDashboard";
 import { PendingClaimsBanner } from "./components/PendingClaimsBanner";
+import { IntentPanel } from "./components/IntentPanel";
 import { ExecutePage } from "./pages/ExecutePage";
 import { type Route as BridgeRoute } from "./api";
 import { VISIBLE_PROVIDERS } from "./config/providers";
+import { type ParsedIntent } from "./lib/parseIntent";
 
 type ChainScope = "mainnet" | "testnet";
 const CHAIN_SCOPE_STORAGE_KEY = "chain_scope";
@@ -36,6 +38,7 @@ function SwapPage() {
   const [sortMode, setSortMode] = useState<"best" | "cheapest" | "fastest">("best");
   const [quotedAt, setQuotedAt] = useState<number | null>(null);
   const [chainScope, setChainScope] = useState<ChainScope>(() => readChainScope());
+  const [pendingIntent, setPendingIntent] = useState<ParsedIntent | null>(null);
 
   useEffect(() => {
     const onScope = (e: Event) => {
@@ -44,6 +47,16 @@ function SwapPage() {
     };
     window.addEventListener("chain-scope-change", onScope);
     return () => window.removeEventListener("chain-scope-change", onScope);
+  }, []);
+
+  // Listen for intents dispatched by IntentPanel.
+  useEffect(() => {
+    const onIntent = (e: Event) => {
+      const parsed = (e as CustomEvent<ParsedIntent>).detail;
+      if (parsed) setPendingIntent(parsed);
+    };
+    window.addEventListener("intent-execute", onIntent);
+    return () => window.removeEventListener("intent-execute", onIntent);
   }, []);
 
   const handleRoute = useCallback((route: BridgeRoute) => {
@@ -112,6 +125,7 @@ function SwapPage() {
             onError={setError}
             onDirty={handleQuoteDirty}
             bestRoute={bestRoute}
+            intent={pendingIntent}
           />
         </div>
         {loading && (
@@ -443,6 +457,7 @@ function NetworkToggle({ chainScope, onChange }: { chainScope: ChainScope; onCha
 
 function TerminalLayout({ children }: { children: ReactNode }) {
   const [chainScope, setChainScope] = useState<ChainScope>(() => readChainScope());
+  const [intentOpen, setIntentOpen] = useState(false);
 
   useEffect(() => {
     const onScope = (e: Event) => {
@@ -500,6 +515,21 @@ function TerminalLayout({ children }: { children: ReactNode }) {
                 Operations
               </NavLink>
             </nav>
+            {/* Intent Engine toggle */}
+            <button
+              onClick={() => setIntentOpen(o => !o)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 transition-colors font-mono text-[10px] uppercase tracking-wider"
+              style={{
+                backgroundColor: intentOpen ? "rgba(190,194,255,0.12)" : "transparent",
+                border: `1px solid ${intentOpen ? "rgba(190,194,255,0.35)" : "rgba(69,69,85,0.40)"}`,
+                color: intentOpen ? "#bec2ff" : "#908fa1",
+              }}
+              onMouseEnter={e => { if (!intentOpen) e.currentTarget.style.color = "#e5e2e1"; }}
+              onMouseLeave={e => { if (!intentOpen) e.currentTarget.style.color = "#908fa1"; }}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: "13px" }}>auto_awesome</span>
+              Intent
+            </button>
             <NetworkToggle chainScope={chainScope} onChange={handleChainScopeChange} />
             <ConnectButton
               showBalance={false}
@@ -510,9 +540,18 @@ function TerminalLayout({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      <main className="w-full px-6 py-10">
+      <main
+        className="w-full px-6 py-10 transition-all duration-300"
+        style={{ paddingRight: intentOpen ? "calc(24px + 384px)" : undefined }}
+      >
         {children}
       </main>
+
+      <AnimatePresence>
+        {intentOpen && (
+          <IntentPanel onClose={() => setIntentOpen(false)} />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

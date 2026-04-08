@@ -14,6 +14,7 @@ import (
 	"bridge-aggregator/internal/bridges"
 	"bridge-aggregator/internal/config"
 	"bridge-aggregator/internal/dex"
+	"bridge-aggregator/internal/middleware"
 	"bridge-aggregator/internal/service"
 	"bridge-aggregator/internal/store"
 
@@ -110,20 +111,41 @@ func main() {
 
 	r := gin.Default()
 
-	// CORS — allow the frontend origin (set ALLOWED_ORIGIN env var in production).
-	// Falls back to wildcard in development when unset.
+	// Body size limit — reject requests larger than 1MB before parsing.
+	r.Use(func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
+		c.Next()
+	})
+
+	// CORS — require explicit ALLOWED_ORIGIN in production.
+	// Defaults to localhost in dev; never falls back to wildcard.
 	allowedOrigin := os.Getenv("ALLOWED_ORIGIN")
 	var allowOrigins []string
 	if allowedOrigin != "" {
 		allowOrigins = strings.Split(allowedOrigin, ",")
 	} else {
-		allowOrigins = []string{"*"}
+		if os.Getenv("ENV") == "production" {
+			log.Fatal("ALLOWED_ORIGIN must be set in production (ENV=production is set)")
+		}
+		log.Printf("warning: ALLOWED_ORIGIN not set — defaulting to http://localhost:5173 (dev only)")
+		allowOrigins = []string{"http://localhost:5173"}
 	}
 	r.Use(cors.New(cors.Config{
 		AllowOrigins: allowOrigins,
 		AllowMethods: []string{"GET", "POST", "PATCH", "OPTIONS"},
-		AllowHeaders: []string{"Content-Type", "Accept"},
+		AllowHeaders: []string{"Content-Type", "Accept", "X-API-Key"},
 	}))
+
+	// Per-IP rate limiters.
+	quoteRL  := middleware.NewRateLimiter(10.0/60, 3)  // 10/min, burst 3
+	intentRL := middleware.NewRateLimiter(5.0/60, 2)   // 5/min,  burst 2
+	executeRL := middleware.NewRateLimiter(20.0/60, 5) // 20/min, burst 5
+
+	// API key middleware for mutating endpoints.
+	apiKeyMW := middleware.RequireAPIKey(cfg.APIKey)
+	if cfg.APIKey == "" {
+		log.Printf("warning: API_KEY not set — /execute and PATCH /operations/:id/status are unprotected")
+	}
 
 	r.GET("/health", api.HealthHandler)
 
@@ -131,19 +153,20 @@ func main() {
 	{
 		v1.GET("/health/adapters", api.AdapterHealthHandler(adapters, dexAdapters, cfg.Network))
 		v1.GET("/capabilities", api.CapabilitiesHandler(adapters, dexAdapters))
-		v1.POST("/quote", api.QuoteHandler(adapters, dexAdapters))
-		v1.POST("/quote/stream", api.StreamQuoteHandler(adapters, dexAdapters))
-		v1.POST("/execute", api.ExecuteHandler(dbStore, adapters))
+		v1.POST("/quote", quoteRL.Limit(), api.QuoteHandler(adapters, dexAdapters))
+		v1.POST("/quote/stream", quoteRL.Limit(), api.StreamQuoteHandler(adapters, dexAdapters))
+		v1.POST("/execute", executeRL.Limit(), apiKeyMW, api.ExecuteHandler(dbStore, adapters))
 		v1.GET("/operations", api.ListOperationsHandler(dbStore))
 		v1.GET("/operations/:id", api.GetOperationHandler(dbStore))
 		v1.GET("/status/:txHash", api.TransactionStatusHandler(blockdaemonClient))
 		v1.GET("/operations/:id/events", api.GetOperationEventsHandler(dbStore))
-		v1.PATCH("/operations/:id/status", api.PatchOperationStatusHandler(dbStore))
-		v1.POST("/dex/quote", api.DEXQuoteHandler(dexAdapters))
+		v1.PATCH("/operations/:id/status", apiKeyMW, api.PatchOperationStatusHandler(dbStore))
+		v1.POST("/dex/quote", quoteRL.Limit(), api.DEXQuoteHandler(dexAdapters))
 		v1.POST("/route/stepTransaction", api.StepTransactionHandler(dexAdapters, bridgeClients))
 		v1.POST("/route/buildTransaction", api.BuildTransactionHandler(adapters))
 		v1.GET("/cctp/attestation/:messageHash", api.CCTPAttestationHandler(cfg.CCTPAttestationURL))
 		v1.GET("/cctp/attestation/stream/:messageHash", api.CCTPAttestationStreamHandler(cfg.CCTPAttestationURL))
+		v1.POST("/intent/parse", intentRL.Limit(), api.IntentParseHandler(cfg.OpenRouterKey))
 	}
 
 	addr := ":" + cfg.Port

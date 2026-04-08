@@ -301,9 +301,11 @@ func (m MayanAdapter) GetQuote(ctx context.Context, req models.QuoteRequest) (*m
 	}
 
 	providerData, _ := json.Marshal(map[string]any{
-		"source":     string(ProviderTierDirect),
-		"protocol":   "mayan_" + strings.ToLower(best.Type),
-		"route_type": best.Type,
+		"source":        string(ProviderTierDirect),
+		"protocol":      "mayan_" + strings.ToLower(best.Type),
+		"route_type":    best.Type,
+		"src_chain_key": fromChain,
+		"dst_chain_key": toChain,
 	})
 
 	toTokenAddr := dst.Token.Address

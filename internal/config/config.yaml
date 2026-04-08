@@ -18,3 +18,9 @@ oneinch_api_url: https://api.1inch.com
 oneinch_api_key: ""
 oneinch_api_version: "v6.1"
 oneinch_swapper: ""
+openrouter_key: ""
+
+# Static API key for mutating endpoints (POST /execute, PATCH /operations/:id/status).
+# Set via API_KEY env var in production. Frontend must send as X-API-Key header (VITE_API_KEY).
+# Leave empty in dev to run without auth; never deploy to production without this set.
+api_key: ""

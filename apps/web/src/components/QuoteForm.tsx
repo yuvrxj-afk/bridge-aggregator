@@ -5,6 +5,7 @@ import { useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { fetchQuoteStream, type Route } from "../api";
 import { CHAINS, TOKENS, getTokens, SOLANA_CHAIN_ID, isTestnetChain, type Chain, type Token } from "../tokens";
+import { type ParsedIntent } from "../lib/parseIntent";
 import { TokenIcon } from "./TokenIcon";
 import { ChainIcon } from "./ChainIcon";
 
@@ -16,6 +17,7 @@ interface Props {
   onError: (msg: string | null) => void;
   onDirty?: () => void;
   bestRoute: Route | null;
+  intent?: ParsedIntent | null;
 }
 
 type ChainScope = "mainnet" | "testnet";
@@ -293,6 +295,7 @@ export function QuoteForm({
   onError,
   onDirty,
   bestRoute,
+  intent,
 }: Props) {
   const { address } = useAccount();
   const { publicKey: solanaPublicKey } = useWallet();
@@ -327,6 +330,36 @@ export function QuoteForm({
       refetchInterval: 10_000,
     },
   });
+
+  // Apply parsed intent (from IntentInput) when it changes.
+  useEffect(() => {
+    if (!intent) return;
+    if (intent.amount) setAmount(intent.amount);
+
+    const allChains = [...CHAINS];
+    if (intent.srcChain) {
+      const c = allChains.find(ch => ch.name === intent.srcChain);
+      if (c) {
+        setSrcChain(c);
+        const tokens = TOKENS[c.id];
+        if (tokens) {
+          const t = tokens.find(tk => tk.symbol === intent.srcToken) ?? tokens[0];
+          setSrcToken(t);
+        }
+      }
+    }
+    if (intent.dstChain) {
+      const c = allChains.find(ch => ch.name === intent.dstChain);
+      if (c) {
+        setDstChain(c);
+        const tokens = TOKENS[c.id];
+        if (tokens) {
+          const t = tokens.find(tk => tk.symbol === intent.dstToken) ?? tokens[0];
+          setDstToken(t);
+        }
+      }
+    }
+  }, [intent]);
 
   useEffect(() => {
     onDirty?.();
@@ -387,13 +420,28 @@ export function QuoteForm({
     setDstToken(t1);
   };
 
+  // Resolve the actual output token decimals from the route's last hop.
+  // Falls back to dstToken.decimals when the route output matches the selected token.
+  const bestRouteOutputDecimals = (() => {
+    if (!bestRoute) return dstToken.decimals;
+    const last = bestRoute.hops[bestRoute.hops.length - 1];
+    if (!last) return dstToken.decimals;
+    const chainTokens = getTokens(
+      CHAINS.find(c => c.name === last.to_chain)?.id ?? 0
+    );
+    const match = chainTokens.find(
+      t => t.symbol.toUpperCase() === last.to_asset?.toUpperCase()
+    );
+    return match?.decimals ?? dstToken.decimals;
+  })();
+
   const bestOutput = (() => {
     if (!bestRoute) return "";
     const last = bestRoute.hops[bestRoute.hops.length - 1];
     if (!last) return "";
     try {
       const n = Number(
-        formatUnits(BigInt(bestRoute.estimated_output_amount), dstToken.decimals),
+        formatUnits(BigInt(bestRoute.estimated_output_amount), bestRouteOutputDecimals),
       );
       if (n === 0) return "";
       if (n >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -409,7 +457,7 @@ export function QuoteForm({
     try {
       const inputNum = Number(amount);
       const outputNum = Number(
-        formatUnits(BigInt(bestRoute.estimated_output_amount), dstToken.decimals),
+        formatUnits(BigInt(bestRoute.estimated_output_amount), bestRouteOutputDecimals),
       );
       if (outputNum === 0 || inputNum === 0) return null;
       const rate = outputNum / inputNum;

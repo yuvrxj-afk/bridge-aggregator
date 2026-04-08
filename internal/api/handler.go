@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 
 	"bridge-aggregator/internal/bridges"
 	"bridge-aggregator/internal/dex"
+	"bridge-aggregator/internal/intent"
 	"bridge-aggregator/internal/lifi"
 	"bridge-aggregator/internal/models"
 	"bridge-aggregator/internal/router"
@@ -435,9 +437,16 @@ func ExecuteHandler(s *store.Store, adapters []bridges.Adapter) gin.HandlerFunc 
 	}
 }
 
-// ListOperationsHandler returns the most recent operations, newest-first.
+// ListOperationsHandler returns the most recent operations for a wallet address, newest-first.
+// Requires ?wallet=0x... query parameter.
 func ListOperationsHandler(s *store.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Validate wallet before checking store — gives the caller a useful error either way.
+		wallet := c.Query("wallet")
+		if wallet == "" {
+			RespondError(c, http.StatusBadRequest, CodeInvalidRequest, "wallet query parameter is required", nil)
+			return
+		}
 		if s == nil {
 			RespondError(c, http.StatusServiceUnavailable, CodeInternal, "database not configured; set DATABASE_URL to enable operations", nil)
 			return
@@ -449,7 +458,7 @@ func ListOperationsHandler(s *store.Store) gin.HandlerFunc {
 			}
 		}
 		scope := c.Query("scope") // "mainnet", "testnet", or "" for all
-		ops, err := s.ListOperations(limit, scope)
+		ops, err := s.ListOperations(limit, scope, wallet)
 		if err != nil {
 			RespondError(c, http.StatusInternalServerError, CodeInternal, err.Error(), nil)
 			return
@@ -770,6 +779,13 @@ func TransactionStatusHandler(blockdaemonClient *bridges.BlockdaemonClient) gin.
 	}
 }
 
+var messageHashRE = regexp.MustCompile(`^0x[0-9a-fA-F]{64}$`)
+
+// isValidMessageHash returns true if h is a 0x-prefixed 32-byte hex string.
+func isValidMessageHash(h string) bool {
+	return messageHashRE.MatchString(h)
+}
+
 // CCTPAttestationHandler proxies Circle Iris attestation requests through the backend,
 // avoiding browser CORS restrictions on direct calls to iris-api.circle.com.
 //
@@ -783,6 +799,10 @@ func CCTPAttestationHandler(attestationURL string) gin.HandlerFunc {
 		messageHash := c.Param("messageHash")
 		if messageHash == "" {
 			RespondError(c, http.StatusBadRequest, CodeInvalidRequest, "messageHash is required", nil)
+			return
+		}
+		if !isValidMessageHash(messageHash) {
+			RespondError(c, http.StatusBadRequest, CodeInvalidRequest, "messageHash must be a 0x-prefixed 32-byte hex string", nil)
 			return
 		}
 		url := attestationURL + "/v1/attestations/" + messageHash
@@ -812,6 +832,10 @@ func CCTPAttestationStreamHandler(attestationURL string) gin.HandlerFunc {
 		messageHash := c.Param("messageHash")
 		if messageHash == "" {
 			RespondError(c, http.StatusBadRequest, CodeInvalidRequest, "messageHash is required", nil)
+			return
+		}
+		if !isValidMessageHash(messageHash) {
+			RespondError(c, http.StatusBadRequest, CodeInvalidRequest, "messageHash must be a 0x-prefixed 32-byte hex string", nil)
 			return
 		}
 
@@ -877,5 +901,28 @@ func CCTPAttestationStreamHandler(attestationURL string) gin.HandlerFunc {
 				flusher.Flush()
 			}
 		}
+	}
+}
+
+// IntentParseHandler parses a natural language intent string using OpenRouter.
+// POST /api/v1/intent/parse — body: {"text":"bridge 10 USDC from Ethereum to Base"}
+// Returns: {"amount":"10","src_token":"USDC","dst_token":"USDC","src_chain":"ethereum","dst_chain":"base"}
+func IntentParseHandler(openRouterKey string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			Text string `json:"text"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Text) == "" {
+			RespondError(c, http.StatusBadRequest, CodeInvalidRequest, "text is required", nil)
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		defer cancel()
+		result, err := intent.Parse(ctx, openRouterKey, req.Text)
+		if err != nil {
+			RespondError(c, http.StatusUnprocessableEntity, "INTENT_PARSE_FAILED", err.Error(), nil)
+			return
+		}
+		c.JSON(http.StatusOK, result)
 	}
 }

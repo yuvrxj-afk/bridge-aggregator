@@ -50,6 +50,12 @@ type Config struct {
 	OneInchAPIKey     string
 	OneInchAPIVersion string // e.g. "v6.1"
 	OneInchSwapper    string // wallet used for swap tx building (from=)
+
+	OpenRouterKey string // OpenRouter API key for intent parsing (optional)
+
+	// APIKey is a static shared secret for mutating API endpoints (/execute, PATCH /operations/:id/status).
+	// Set via API_KEY env var. If empty, mutating endpoints are unprotected — do not run in production without this.
+	APIKey string
 }
 
 func Load() (*Config, error) {
@@ -88,6 +94,8 @@ func Load() (*Config, error) {
 	viper.SetDefault("oneinch_api_key", "")
 	viper.SetDefault("oneinch_api_version", "v6.1")
 	viper.SetDefault("oneinch_swapper", "")
+	viper.SetDefault("openrouter_key", "")
+	viper.SetDefault("api_key", "")
 	viper.AutomaticEnv()
 
 	if err := viper.ReadInConfig(); err != nil {
@@ -125,6 +133,8 @@ func Load() (*Config, error) {
 		OneInchAPIKey:        viper.GetString("oneinch_api_key"),
 		OneInchAPIVersion:    viper.GetString("oneinch_api_version"),
 		OneInchSwapper:       viper.GetString("oneinch_swapper"),
+		OpenRouterKey:        viper.GetString("openrouter_key"),
+		APIKey:               viper.GetString("api_key"),
 	}
 	return cfg, nil
 }
