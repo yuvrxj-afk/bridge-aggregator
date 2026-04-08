@@ -462,9 +462,11 @@ export function OperationsDashboard() {
   const loadOps = useCallback(async (cancelled: { v: boolean }, scope: string, wallet: string) => {
     if (!wallet) {
       setOps([]);
+      setOpsError(null);
       setOpsLoading(false);
       return;
     }
+    setOpsLoading(true);
     try {
       const data = await fetchOperations(wallet, 50, scope);
       if (cancelled.v) return;
@@ -564,7 +566,11 @@ export function OperationsDashboard() {
             </div>
 
             {/* Operation cards */}
-            {opsLoading ? (
+            {!walletAddress ? (
+              <div className="py-16 text-center">
+                <span className="text-sm" style={{ color: C.onSurfaceVariant }}>Connect your wallet to see your operations</span>
+              </div>
+            ) : opsLoading ? (
               <div className="py-16 text-center">
                 <span className="text-sm" style={{ color: C.onSurfaceVariant }}>Loading operations…</span>
               </div>

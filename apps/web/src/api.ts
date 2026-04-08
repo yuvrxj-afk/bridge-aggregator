@@ -233,7 +233,7 @@ async function apiFetch<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${getBase()}${path}`);
+  const res = await fetch(`${getBase()}${path}`, { headers: authHeaders() });
   const data = await res.json() as ApiErrorBody;
   if (!res.ok) {
     const err = data.error ?? {};

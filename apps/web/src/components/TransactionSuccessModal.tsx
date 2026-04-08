@@ -1,5 +1,24 @@
 import { motion, AnimatePresence } from "framer-motion";
 
+// Bridge-specific status page URLs
+function bridgeStatusUrl(bridgeId: string, txHash: string, _srcChainId?: number): string | null {
+  if (bridgeId === "across") {
+    return `https://app.across.to/transactions/${txHash}`;
+  }
+  if (bridgeId === "cctp" || bridgeId === "circle_cctp") {
+    return `https://cctp.money`;
+  }
+  return null;
+}
+
+function arrivalTimeLabel(estimatedTimeSec?: number): string | null {
+  if (!estimatedTimeSec || estimatedTimeSec <= 0) return null;
+  const arrival = new Date(Date.now() + estimatedTimeSec * 1000);
+  const hh = arrival.getHours().toString().padStart(2, "0");
+  const mm = arrival.getMinutes().toString().padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
 interface TransactionSuccessModalProps {
   open: boolean;
   txHash: string;
@@ -9,6 +28,12 @@ interface TransactionSuccessModalProps {
   amount: string;
   bridgeLabel: string;
   explorerUrl: string;
+  // Enhanced fields
+  estimatedOutput?: string;  // formatted output amount
+  dstAsset?: string;         // destination token symbol
+  estimatedTimeSec?: number; // seconds until arrival
+  bridgeId?: string;         // for bridge-specific status link
+  srcChainId?: number;
   onViewOps: () => void;
   onDone: () => void;
 }
@@ -22,9 +47,16 @@ export function TransactionSuccessModal({
   amount,
   bridgeLabel,
   explorerUrl,
+  estimatedOutput,
+  dstAsset,
+  estimatedTimeSec,
+  bridgeId,
+  srcChainId,
   onViewOps,
   onDone,
 }: TransactionSuccessModalProps) {
+  const arrivalTime = arrivalTimeLabel(estimatedTimeSec);
+  const statusUrl = bridgeId ? bridgeStatusUrl(bridgeId, txHash, srcChainId) : null;
   return (
     <AnimatePresence>
       {open && (
@@ -108,12 +140,35 @@ export function TransactionSuccessModal({
                   style={{ backgroundColor: "rgba(190,194,255,0.06)", border: "1px solid rgba(190,194,255,0.12)" }}
                 >
                   <span className="text-[11px] font-mono uppercase tracking-widest" style={{ color: "#908fa1" }}>
-                    Amount
+                    Sent
                   </span>
                   <span className="text-sm font-bold font-mono" style={{ color: "#bec2ff" }}>
                     {amount} {asset}
                   </span>
                 </div>
+
+                {estimatedOutput && dstAsset && (
+                  <div
+                    className="flex items-center justify-between px-4 py-3"
+                    style={{ backgroundColor: "rgba(74,222,128,0.06)", border: "1px solid rgba(74,222,128,0.15)" }}
+                  >
+                    <span className="text-[11px] font-mono uppercase tracking-widest" style={{ color: "#908fa1" }}>
+                      You receive ~
+                    </span>
+                    <span className="text-sm font-bold font-mono" style={{ color: "#4ade80" }}>
+                      {estimatedOutput} {dstAsset}
+                    </span>
+                  </div>
+                )}
+
+                {arrivalTime && (
+                  <div className="flex items-center justify-between px-4 py-2" style={{ color: "#908fa1" }}>
+                    <span className="text-[11px] font-mono uppercase tracking-widest">Expected by</span>
+                    <span className="text-[11px] font-mono font-semibold" style={{ color: "#c6c5d8" }}>
+                      {arrivalTime}
+                    </span>
+                  </div>
+                )}
 
                 <a
                   href={explorerUrl}
@@ -138,6 +193,25 @@ export function TransactionSuccessModal({
                     View ↗
                   </span>
                 </a>
+                {statusUrl && (
+                  <a
+                    href={statusUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-between px-4 py-2.5 transition-colors"
+                    style={{
+                      backgroundColor: "rgba(190,194,255,0.04)",
+                      border: "1px solid rgba(190,194,255,0.12)",
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.backgroundColor = "rgba(190,194,255,0.08)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.backgroundColor = "rgba(190,194,255,0.04)"; }}
+                  >
+                    <span className="text-[11px] font-mono" style={{ color: "#bec2ff" }}>
+                      Track on {bridgeLabel}
+                    </span>
+                    <span className="text-[11px]" style={{ color: "#908fa1" }}>↗</span>
+                  </a>
+                )}
               </div>
 
               {/* Actions */}

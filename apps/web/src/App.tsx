@@ -38,6 +38,9 @@ function SwapPage() {
   const [sortMode, setSortMode] = useState<"best" | "cheapest" | "fastest">("best");
   const [quotedAt, setQuotedAt] = useState<number | null>(null);
   const [pendingIntent, setPendingIntent] = useState<ParsedIntent | null>(null);
+  const [safeOnly, setSafeOnly] = useState<boolean>(() => {
+    try { return window.localStorage.getItem("safe_routes_only") === "true"; } catch { return false; }
+  });
 
   // Listen for intents dispatched by IntentPanel.
   useEffect(() => {
@@ -84,6 +87,9 @@ function SwapPage() {
     items = items.filter(
       (r) => r.hops.every((h) => VISIBLE_PROVIDERS.has(h.bridge_id)),
     );
+    if (safeOnly) {
+      items = items.filter((r) => r.execution?.guarantee === "relay_fill_or_refund");
+    }
     if (sortMode === "cheapest") {
       items.sort((a, b) => Number(a.total_fee || "0") - Number(b.total_fee || "0"));
     } else if (sortMode === "fastest") {
@@ -153,21 +159,46 @@ function SwapPage() {
               <div className="xl:max-w-[400px] w-full">
                 <QuoteSummaryCard route={bestRoute} onEdit={handleEdit} />
               </div>
-              <div className="xl:ml-auto flex items-center gap-1 bg-[#1c1b1b] border border-[#2a2a2a] p-1 self-start mt-1">
-                {(["best", "cheapest", "fastest"] as const).map((id) => (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => setSortMode(id)}
-                    className={`px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider transition-colors ${
-                      sortMode === id
-                        ? "bg-[#c6c6c7] text-[#2f3131] font-semibold"
-                        : "text-[#c6c5d8] hover:text-[#e5e2e1]"
-                    }`}
-                  >
-                    {id === "best" ? "Best" : id.charAt(0).toUpperCase() + id.slice(1)}
-                  </button>
-                ))}
+              <div className="xl:ml-auto flex items-center gap-2 self-start mt-1">
+                {/* Safe Routes Only toggle */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !safeOnly;
+                    setSafeOnly(next);
+                    try { window.localStorage.setItem("safe_routes_only", String(next)); } catch { /* ignore */ }
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider transition-colors border"
+                  style={{
+                    backgroundColor: safeOnly ? "rgba(74,222,128,0.12)" : "transparent",
+                    borderColor: safeOnly ? "rgba(74,222,128,0.40)" : "rgba(69,69,85,0.40)",
+                    color: safeOnly ? "#4ade80" : "#908fa1",
+                  }}
+                  title="Only show routes with automatic refund guarantee"
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: "13px", fontVariationSettings: "'FILL' 1" }}>
+                    verified_user
+                  </span>
+                  Safe only
+                </button>
+
+                {/* Sort mode */}
+                <div className="flex items-center gap-1 bg-[#1c1b1b] border border-[#2a2a2a] p-1">
+                  {(["best", "cheapest", "fastest"] as const).map((id) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setSortMode(id)}
+                      className={`px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider transition-colors ${
+                        sortMode === id
+                          ? "bg-[#c6c6c7] text-[#2f3131] font-semibold"
+                          : "text-[#c6c5d8] hover:text-[#e5e2e1]"
+                      }`}
+                    >
+                      {id === "best" ? "Best" : id.charAt(0).toUpperCase() + id.slice(1)}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 

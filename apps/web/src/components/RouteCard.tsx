@@ -66,9 +66,87 @@ function intentLabel(intent?: string) {
   switch (intent) {
     case "atomic_one_click": return "One-click";
     case "guided_two_step":  return "2-step";
-    case "async_claim":      return "Async claim";
+    case "async_claim":      return "Claim required";
     default:                 return "Unsupported";
   }
+}
+
+// ── Guarantee Badge ───────────────────────────────────────────────────────────
+
+function GuaranteeBadge({ guarantee, reasons }: { guarantee?: string; reasons?: string[] }) {
+  if (!guarantee || guarantee === "unknown") return null;
+
+  const isProtected = guarantee === "relay_fill_or_refund";
+  const label  = isProtected ? "Protected" : "Manual Recovery";
+  const icon   = isProtected ? "verified_user" : "warning";
+  const color  = isProtected ? "#4ade80" : "#fbbf24";
+  const bg     = isProtected ? "rgba(74,222,128,0.10)" : "rgba(251,191,36,0.10)";
+  const border = isProtected ? "rgba(74,222,128,0.25)" : "rgba(251,191,36,0.25)";
+  const tip    = isProtected
+    ? "Funds guaranteed to arrive or be automatically refunded."
+    : (reasons?.[0] ?? "Manual action may be required if the bridge fails.");
+
+  return (
+    <div className="relative group/badge">
+      <span
+        className="flex items-center gap-1 text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 cursor-default"
+        style={{ color, backgroundColor: bg, border: `1px solid ${border}` }}
+      >
+        <span className="material-symbols-outlined" style={{ fontSize: "11px", fontVariationSettings: "'FILL' 1" }}>
+          {icon}
+        </span>
+        {label}
+      </span>
+      {/* Tooltip */}
+      <div
+        className="absolute bottom-full left-0 mb-1.5 w-56 px-3 py-2 text-[11px] leading-relaxed pointer-events-none opacity-0 group-hover/badge:opacity-100 transition-opacity z-20"
+        style={{ backgroundColor: "#1c1b1b", border: "1px solid rgba(69,69,85,0.6)", color: "#c6c5d8" }}
+      >
+        {tip}
+      </div>
+    </div>
+  );
+}
+
+// ── Intent Chip with tooltip ──────────────────────────────────────────────────
+
+function IntentChip({ exec }: { exec?: { intent?: string; supported?: boolean; reasons?: string[] } }) {
+  if (!exec) return null;
+  const label = intentLabel(exec.intent);
+  const isOneClick = exec.intent === "atomic_one_click";
+  const tip = exec.reasons?.[0];
+
+  return (
+    <div className="relative group/intent">
+      <span
+        className="text-xs font-mono flex items-center gap-1.5 px-2.5 py-1 uppercase cursor-default"
+        style={{
+          backgroundColor: exec.supported
+            ? isOneClick ? "rgba(190,194,255,0.15)" : "rgba(198,197,216,0.10)"
+            : "rgba(255,180,171,0.12)",
+          color: exec.supported
+            ? isOneClick ? "#bec2ff" : "#c6c5d8"
+            : "#ffb4ab",
+        }}
+      >
+        <span
+          className="material-symbols-outlined"
+          style={{ fontSize: "16px", fontVariationSettings: "'FILL' 1", verticalAlign: "middle" }}
+        >
+          {exec.supported ? (isOneClick ? "bolt" : "sync") : "description"}
+        </span>
+        {exec.supported ? label : "Quote only"}
+      </span>
+      {tip && (
+        <div
+          className="absolute bottom-full right-0 mb-1.5 w-60 px-3 py-2 text-[11px] leading-relaxed pointer-events-none opacity-0 group-hover/intent:opacity-100 transition-opacity z-20"
+          style={{ backgroundColor: "#1c1b1b", border: "1px solid rgba(69,69,85,0.6)", color: "#c6c5d8" }}
+        >
+          {tip}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Material Icon Component ──────────────────────────────────────────────────
@@ -194,7 +272,6 @@ export function RouteCard({ route, isBest, selected, onSelect }: Props) {
     : "$0.00";
   const mins  = Math.ceil(route.estimated_time_seconds / 60);
   const exec  = route.execution;
-  const intent = intentLabel(exec?.intent);
   const primaryBridge = first?.bridge_id ?? route.route_id;
 
   // ── Price impact / effective rate ──────────────────────────────────────────
@@ -237,9 +314,9 @@ export function RouteCard({ route, isBest, selected, onSelect }: Props) {
           : "0 2px 4px rgba(0,0,0,0.2)",
       }}
     >
-      {/* ── Top Row: Execution Status + Best Badge ── */}
+      {/* ── Top Row: Badges ── */}
       <div className="flex justify-between items-start mb-5">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {isBest && (
             <span
               className="text-[10px] font-bold px-2 py-0.5 uppercase tracking-wider"
@@ -248,27 +325,9 @@ export function RouteCard({ route, isBest, selected, onSelect }: Props) {
               Best Route
             </span>
           )}
+          <GuaranteeBadge guarantee={exec?.guarantee} reasons={exec?.reasons} />
         </div>
-        <div className="flex items-center gap-3">
-          <span
-            className="text-xs font-mono flex items-center gap-1.5 px-2.5 py-1 uppercase"
-            style={{
-              backgroundColor: exec?.supported
-                ? exec?.intent === "atomic_one_click" ? "rgba(190,194,255,0.15)" : "rgba(198,197,216,0.10)"
-                : "rgba(255,180,171,0.12)",
-              color: exec?.supported
-                ? exec?.intent === "atomic_one_click" ? "#bec2ff" : "#c6c5d8"
-                : "#ffb4ab"
-            }}
-          >
-            <MaterialIcon
-              icon={exec?.supported ? (exec?.intent === "atomic_one_click" ? "bolt" : "sync") : "description"}
-              filled
-              size={16}
-            />
-            {exec?.supported ? intent : "Quote only"}
-          </span>
-        </div>
+        <IntentChip exec={exec} />
       </div>
 
       {/* ── Protocol Name + Output Amount (Side by Side) ── */}
@@ -341,6 +400,24 @@ export function RouteCard({ route, isBest, selected, onSelect }: Props) {
         >
           <RoutingFlow hops={route.hops} collapsed={!expanded} />
         </div>
+
+        {/* Per-hop fee breakdown — shown when expanded or single-hop */}
+        {(expanded || route.hops.length === 1) && (
+          <div className="mt-3 space-y-1">
+            {route.hops.map((hop, i) => {
+              const hopFee = hop.estimated_fee && hop.estimated_fee !== "0"
+                ? `$${Number(hop.estimated_fee).toFixed(2)}`
+                : null;
+              if (!hopFee) return null;
+              return (
+                <div key={i} className="flex items-center justify-between text-[10px] font-mono" style={{ color: "#908fa1" }}>
+                  <span className="uppercase tracking-wide">{hopLabel(hop.bridge_id)}</span>
+                  <span>{hopFee}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* ── Selection Indicator ── */}

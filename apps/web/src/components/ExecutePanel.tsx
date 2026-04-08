@@ -1071,6 +1071,8 @@ export function ExecutePanel({
 
 
   const modalExplorerUrl = explorerTx(cctpClaimDone ? dstChainId : srcChainId, txHash);
+  const modalDstDec = tokenDecimals(dstChainId, dstHop?.to_asset);
+  const primaryBridgeId = route.hops.find(h => h.hop_type === "bridge")?.bridge_id;
 
   return (
     <>
@@ -1083,6 +1085,11 @@ export function ExecutePanel({
       amount={fmtAmt(srcHop.amount_in_base_units ?? "0", srcDec)}
       bridgeLabel={bridgeLabel || "Bridge"}
       explorerUrl={modalExplorerUrl}
+      estimatedOutput={fmtAmt(route.estimated_output_amount ?? "0", modalDstDec)}
+      dstAsset={dstHop.to_asset}
+      estimatedTimeSec={route.estimated_time_seconds}
+      bridgeId={primaryBridgeId}
+      srcChainId={srcChainId}
       onViewOps={() => { setShowSuccessModal(false); navigate("/operations"); }}
       onDone={() => { setShowSuccessModal(false); navigate("/app"); }}
     />
