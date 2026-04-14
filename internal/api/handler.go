@@ -17,6 +17,7 @@ import (
 
 	"bridge-aggregator/internal/bridges"
 	"bridge-aggregator/internal/dex"
+	"bridge-aggregator/internal/ethutil"
 	"bridge-aggregator/internal/intent"
 	"bridge-aggregator/internal/lifi"
 	"bridge-aggregator/internal/models"
@@ -51,6 +52,14 @@ func QuoteHandler(adapters []bridges.Adapter, dexAdapters []dex.Adapter) gin.Han
 				nil,
 			)
 			return
+		}
+		if req.AmountBaseUnits != "" {
+			if err := ethutil.ValidatePositiveUint256String(req.AmountBaseUnits); err != nil {
+				RespondErrorTyped(c, http.StatusBadRequest, CodeInvalidRequest,
+					"amount_base_units must be an unsigned uint256 integer string > 0",
+					models.ErrorTypeUserAction, "invalid_amount_base_units", nil)
+				return
+			}
 		}
 
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 7*time.Second)
@@ -97,6 +106,14 @@ func StreamQuoteHandler(adapters []bridges.Adapter, dexAdapters []dex.Adapter) g
 			RespondError(c, http.StatusBadRequest, CodeInvalidRequest,
 				"require source/destination (chain+asset or chain_id+token_address) and amount", nil)
 			return
+		}
+		if req.AmountBaseUnits != "" {
+			if err := ethutil.ValidatePositiveUint256String(req.AmountBaseUnits); err != nil {
+				RespondErrorTyped(c, http.StatusBadRequest, CodeInvalidRequest,
+					"amount_base_units must be an unsigned uint256 integer string > 0",
+					models.ErrorTypeUserAction, "invalid_amount_base_units", nil)
+				return
+			}
 		}
 
 		flusher, ok := c.Writer.(http.Flusher)
@@ -192,40 +209,40 @@ func bridgeProbeRequest(id, network string) models.QuoteRequest {
 	case "canonical_base":
 		if testnet {
 			return models.QuoteRequest{
-				Source:      models.Endpoint{ChainID: 11155111, Chain: "sepolia", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
-				Destination: models.Endpoint{ChainID: 84532, Chain: "base-sepolia", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
+				Source:          models.Endpoint{ChainID: 11155111, Chain: "sepolia", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
+				Destination:     models.Endpoint{ChainID: 84532, Chain: "base-sepolia", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
 				AmountBaseUnits: "1000000000000000",
 			}
 		}
 		return models.QuoteRequest{
-			Source:      models.Endpoint{ChainID: 1, Chain: "ethereum", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
-			Destination: models.Endpoint{ChainID: 8453, Chain: "base", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
+			Source:          models.Endpoint{ChainID: 1, Chain: "ethereum", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
+			Destination:     models.Endpoint{ChainID: 8453, Chain: "base", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
 			AmountBaseUnits: "1000000000000000",
 		}
 	case "canonical_optimism":
 		if testnet {
 			return models.QuoteRequest{
-				Source:      models.Endpoint{ChainID: 11155111, Chain: "sepolia", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
-				Destination: models.Endpoint{ChainID: 11155420, Chain: "op-sepolia", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
+				Source:          models.Endpoint{ChainID: 11155111, Chain: "sepolia", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
+				Destination:     models.Endpoint{ChainID: 11155420, Chain: "op-sepolia", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
 				AmountBaseUnits: "1000000000000000",
 			}
 		}
 		return models.QuoteRequest{
-			Source:      models.Endpoint{ChainID: 1, Chain: "ethereum", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
-			Destination: models.Endpoint{ChainID: 10, Chain: "optimism", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
+			Source:          models.Endpoint{ChainID: 1, Chain: "ethereum", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
+			Destination:     models.Endpoint{ChainID: 10, Chain: "optimism", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
 			AmountBaseUnits: "1000000000000000",
 		}
 	case "canonical_arbitrum":
 		if testnet {
 			return models.QuoteRequest{
-				Source:      models.Endpoint{ChainID: 11155111, Chain: "sepolia", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
-				Destination: models.Endpoint{ChainID: 421614, Chain: "arbitrum-sepolia", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
+				Source:          models.Endpoint{ChainID: 11155111, Chain: "sepolia", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
+				Destination:     models.Endpoint{ChainID: 421614, Chain: "arbitrum-sepolia", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
 				AmountBaseUnits: "1000000000000000",
 			}
 		}
 		return models.QuoteRequest{
-			Source:      models.Endpoint{ChainID: 1, Chain: "ethereum", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
-			Destination: models.Endpoint{ChainID: 42161, Chain: "arbitrum", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
+			Source:          models.Endpoint{ChainID: 1, Chain: "ethereum", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
+			Destination:     models.Endpoint{ChainID: 42161, Chain: "arbitrum", Asset: "ETH", TokenAddress: "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", TokenDecimals: 18},
 			AmountBaseUnits: "1000000000000000",
 		}
 	default:
@@ -403,6 +420,7 @@ func CapabilitiesHandler(adapters []bridges.Adapter, dexAdapters []dex.Adapter) 
 				},
 				"requires_tx_hash_on_submitted": true,
 				"bridge_adapters":               bridgeIDs,
+				"confirmed_bridge_adapters":     []string{"across", "cctp"},
 			},
 		}
 		c.JSON(http.StatusOK, resp)
@@ -425,8 +443,13 @@ func ExecuteHandler(s *store.Store, adapters []bridges.Adapter) gin.HandlerFunc 
 		resp, err := service.Execute(c.Request.Context(), s, adapters, req)
 		if err != nil {
 			switch {
-			case errors.Is(err, service.ErrRouteRequired), errors.Is(err, service.ErrRouteHopsEmpty), errors.Is(err, service.ErrUnknownBridgeID):
+			case errors.Is(err, service.ErrRouteRequired), errors.Is(err, service.ErrRouteHopsEmpty), errors.Is(err, service.ErrUnknownBridgeID), errors.Is(err, service.ErrQuoteExpiryRequired):
 				RespondError(c, http.StatusBadRequest, CodeInvalidRequest, err.Error(), nil)
+				return
+			case errors.Is(err, service.ErrQuoteExpired):
+				RespondErrorTyped(c, http.StatusConflict, CodeInvalidRequest,
+					"quote has expired; please requote",
+					models.ErrorTypeRequote, "quote_expired", nil)
 				return
 			}
 			RespondError(c, http.StatusInternalServerError, CodeInternal, err.Error(), nil)
@@ -741,6 +764,9 @@ func StepTransactionHandler(dexAdapters []dex.Adapter, bc *service.BridgeClients
 			switch {
 			case errors.Is(err, service.ErrHopIndexOutOfRange), errors.Is(err, service.ErrHopNotSupported), errors.Is(err, service.ErrPermitSignatureReq):
 				RespondError(c, http.StatusBadRequest, CodeInvalidRequest, err.Error(), nil)
+				return
+			case errors.Is(err, service.ErrInvalidAmountField), errors.Is(err, service.ErrInvalidValueField), errors.Is(err, service.ErrInvalidFeeField), errors.Is(err, service.ErrEncodingGuard):
+				RespondErrorTyped(c, http.StatusBadRequest, CodeInvalidRequest, err.Error(), models.ErrorTypeTerminal, "invalid_numeric_field", nil)
 				return
 			}
 			RespondError(c, http.StatusInternalServerError, CodeInternal, err.Error(), nil)

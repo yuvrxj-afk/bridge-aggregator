@@ -6,9 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
+	"math/big"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -40,6 +39,7 @@ func truncateForLog(s string, max int) string {
 
 // ErrNoRoutes is returned when no adapter returns a valid route for the request.
 var ErrNoRoutes = errors.New("no available routes for the requested pair")
+var ErrInvalidRouteFee = errors.New("invalid route fee")
 
 // quoteIncompleteReason validates that a route has the minimum fields required for
 // execution. Returns a non-empty string describing why the quote is incomplete, or
@@ -141,15 +141,24 @@ func Quote(ctx context.Context, adapters []bridges.Adapter, req models.QuoteRequ
 	}
 
 	// Score and sort: lower fee and lower time are better.
+	scored := make([]*models.Route, 0, len(routes))
 	for _, r := range routes {
+		if _, err := parseNonNegativeDecimal(r.TotalFee); err != nil {
+			log.Printf("[router] dropped route=%s reason=invalid total_fee: %s", r.RouteID, truncateForLog(err.Error(), maxLogErrorLen))
+			continue
+		}
 		r.Score = scoreRoute(r, priority)
+		scored = append(scored, r)
 	}
-	sort.Slice(routes, func(i, j int) bool {
-		return routes[i].Score > routes[j].Score
+	if len(scored) == 0 {
+		return nil, ErrNoRoutes
+	}
+	sort.Slice(scored, func(i, j int) bool {
+		return compareRoutes(scored[i], scored[j], priority) > 0
 	})
 
-	out := make([]models.Route, len(routes))
-	for i, r := range routes {
+	out := make([]models.Route, len(scored))
+	for i, r := range scored {
 		out[i] = *r
 	}
 	return out, nil
@@ -168,52 +177,59 @@ func isSameChainRequest(req models.QuoteRequest) bool {
 }
 
 func scoreRoute(r *models.Route, priority string) float64 {
-	fee, _ := strconv.ParseFloat(r.TotalFee, 64)
-	timeNorm := float64(r.EstimatedTimeSeconds) / 60.0
-	if timeNorm < 1 {
-		timeNorm = 1
+	fee, err := parseNonNegativeDecimal(r.TotalFee)
+	if err != nil {
+		return 0
 	}
-
-	fee = fee + routeScoreFeePenalty(r)
-	fee = fee + routeScoreExecutionPenalty(r)
+	penalty := new(big.Rat).Add(routeScoreFeePenaltyRat(r), routeScoreExecutionPenaltyRat(r))
+	feeWithPenalty := new(big.Rat).Add(fee, penalty)
 
 	switch priority {
 	case "fastest":
-		return 1000.0 / timeNorm
+		timeNorm := big.NewRat(r.EstimatedTimeSeconds, 60)
+		if timeNorm.Cmp(big.NewRat(1, 1)) < 0 {
+			timeNorm = big.NewRat(1, 1)
+		}
+		score := new(big.Rat).Quo(big.NewRat(1000, 1), timeNorm)
+		f, _ := score.Float64()
+		return f
 	case "cheapest", "":
 		fallthrough
 	default:
-		return 1000.0 / (1 + fee)
+		den := new(big.Rat).Add(big.NewRat(1, 1), feeWithPenalty)
+		score := new(big.Rat).Quo(big.NewRat(1000, 1), den)
+		f, _ := score.Float64()
+		return f
 	}
 }
 
-func routeScoreExecutionPenalty(r *models.Route) float64 {
+func routeScoreExecutionPenaltyRat(r *models.Route) *big.Rat {
 	if r == nil || r.Execution == nil {
-		return 0.5
+		return big.NewRat(1, 2)
 	}
 	if !r.Execution.Supported {
-		return 50
+		return big.NewRat(50, 1)
 	}
 	switch r.Execution.Intent {
 	case "atomic_one_click":
-		return 0
+		return new(big.Rat)
 	case "guided_two_step":
-		return 0.1
+		return big.NewRat(1, 10)
 	case "async_claim":
-		return 1.5
+		return big.NewRat(3, 2)
 	default:
-		return 0.5
+		return big.NewRat(1, 2)
 	}
 }
 
-func routeScoreFeePenalty(r *models.Route) float64 {
+func routeScoreFeePenaltyRat(r *models.Route) *big.Rat {
 	switch routeTier(r) {
 	case "aggregator":
-		return 0.25
+		return big.NewRat(1, 4)
 	case "placeholder":
-		return 2.0
+		return big.NewRat(2, 1)
 	default:
-		return 0
+		return new(big.Rat)
 	}
 }
 
@@ -275,15 +291,80 @@ func jsonString(raw json.RawMessage) string {
 	return s
 }
 
-func mustParseFloat(s string) float64 {
-	if s == "" {
-		return 0
+func parseNonNegativeDecimal(s string) (*big.Rat, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, fmt.Errorf("%w: empty", ErrInvalidRouteFee)
 	}
-	f, err := strconv.ParseFloat(s, 64)
-	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
-		return 0
+	if s != strings.TrimSpace(s) {
+		return nil, fmt.Errorf("%w: whitespace not allowed", ErrInvalidRouteFee)
 	}
-	return f
+	if strings.HasPrefix(s, "-") || strings.HasPrefix(s, "+") {
+		return nil, fmt.Errorf("%w: sign not allowed", ErrInvalidRouteFee)
+	}
+	dotCount := 0
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '.' {
+			dotCount++
+			if dotCount > 1 {
+				return nil, fmt.Errorf("%w: invalid decimal format", ErrInvalidRouteFee)
+			}
+			continue
+		}
+		if ch < '0' || ch > '9' {
+			return nil, fmt.Errorf("%w: invalid character", ErrInvalidRouteFee)
+		}
+	}
+	if s == "." {
+		return nil, fmt.Errorf("%w: invalid decimal format", ErrInvalidRouteFee)
+	}
+	r, ok := new(big.Rat).SetString(s)
+	if !ok {
+		return nil, fmt.Errorf("%w: parse failed", ErrInvalidRouteFee)
+	}
+	if r.Sign() < 0 {
+		return nil, fmt.Errorf("%w: negative", ErrInvalidRouteFee)
+	}
+	return r, nil
+}
+
+func formatRatDecimal(r *big.Rat) string {
+	if r == nil {
+		return "0"
+	}
+	return r.FloatString(18)
+}
+
+func compareRoutes(a, b *models.Route, priority string) int {
+	if priority == "fastest" {
+		ta := a.EstimatedTimeSeconds
+		tb := b.EstimatedTimeSeconds
+		if ta < tb {
+			return 1
+		}
+		if ta > tb {
+			return -1
+		}
+	} else {
+		fa, errA := parseNonNegativeDecimal(a.TotalFee)
+		fb, errB := parseNonNegativeDecimal(b.TotalFee)
+		if errA == nil && errB == nil {
+			pa := new(big.Rat).Add(fa, routeScoreFeePenaltyRat(a))
+			pa.Add(pa, routeScoreExecutionPenaltyRat(a))
+			pb := new(big.Rat).Add(fb, routeScoreFeePenaltyRat(b))
+			pb.Add(pb, routeScoreExecutionPenaltyRat(b))
+			if c := pb.Cmp(pa); c != 0 {
+				return c
+			}
+		}
+	}
+	if a.Score > b.Score {
+		return 1
+	}
+	if a.Score < b.Score {
+		return -1
+	}
+	return 0
 }
 
 func buildSwapProviderData(dq *dex.Quote) json.RawMessage {
@@ -359,12 +440,21 @@ func QuoteUnified(ctx context.Context, adapters []bridges.Adapter, dexAdapters [
 	if req.Preferences != nil && req.Preferences.Priority != "" {
 		priority = req.Preferences.Priority
 	}
+	filtered := make([]models.Route, 0, len(out))
 	for i := range out {
 		out[i].Execution = deriveExecutionProfile(&out[i])
+		if _, err := parseNonNegativeDecimal(out[i].TotalFee); err != nil {
+			log.Printf("[router] dropped route=%s reason=invalid total_fee: %s", out[i].RouteID, truncateForLog(err.Error(), maxLogErrorLen))
+			continue
+		}
 		out[i].Score = scoreRoute(&out[i], priority)
+		filtered = append(filtered, out[i])
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
-	return out, nil
+	if len(filtered) == 0 {
+		return nil, ErrNoRoutes
+	}
+	sort.Slice(filtered, func(i, j int) bool { return compareRoutes(&filtered[i], &filtered[j], priority) > 0 })
+	return filtered, nil
 }
 
 // QuoteStream runs all adapters in parallel (same as QuoteUnified) and fires onRoute
@@ -531,8 +621,8 @@ func deriveExecutionProfile(r *models.Route) *models.ExecutionProfile {
 		if crossSwapType == "anyToBridgeable" || crossSwapType == "bridgeableToAny" || crossSwapType == "anyToAny" {
 			p.Intent = "guided_two_step"
 			p.Metadata = map[string]string{
-				"execution_path": "across_swap_tx",
-				"protocol":       firstNonEmpty(protocol, "across_v3"),
+				"execution_path":  "across_swap_tx",
+				"protocol":        firstNonEmpty(protocol, "across_v3"),
 				"cross_swap_type": crossSwapType,
 			}
 			return p
@@ -780,12 +870,16 @@ func quoteBridgeThenSwap(ctx context.Context, adapters []bridges.Adapter, dexAda
 			continue
 		}
 
-		totalFee := mustParseFloat(br.TotalFee) + mustParseFloat(dq.EstimatedFeeAmount)
+		totalFee, feeErr := sumFeeStrings(br.TotalFee, dq.EstimatedFeeAmount)
+		if feeErr != nil {
+			log.Printf("[router] dropped composed route bridge=%s dex=%s reason=%s", h.BridgeID, dq.DEXID, truncateForLog(feeErr.Error(), maxLogErrorLen))
+			continue
+		}
 		route := models.Route{
 			RouteID:               "bridge:" + h.BridgeID + "->swap:" + dq.DEXID,
 			EstimatedOutputAmount: dq.EstimatedOutputAmount,
 			EstimatedTimeSeconds:  br.EstimatedTimeSeconds + 30,
-			TotalFee:              strconv.FormatFloat(totalFee, 'f', -1, 64),
+			TotalFee:              totalFee,
 			Hops:                  append([]models.Hop{}, br.Hops...),
 		}
 		route.Hops = append(route.Hops, models.Hop{
@@ -850,11 +944,16 @@ func quoteSwapThenBridge(ctx context.Context, adapters []bridges.Adapter, dexAda
 
 	var out []models.Route
 	for _, br := range brRoutes {
+		totalFee, feeErr := sumFeeStrings(dq.EstimatedFeeAmount, br.TotalFee)
+		if feeErr != nil {
+			log.Printf("[router] dropped composed route dex=%s bridge=%s reason=%s", dq.DEXID, br.RouteID, truncateForLog(feeErr.Error(), maxLogErrorLen))
+			continue
+		}
 		route := models.Route{
 			RouteID:               "swap:" + dq.DEXID + "->bridge:" + br.RouteID,
 			EstimatedOutputAmount: br.EstimatedOutputAmount,
 			EstimatedTimeSeconds:  30 + br.EstimatedTimeSeconds,
-			TotalFee:              br.TotalFee,
+			TotalFee:              totalFee,
 			Hops: []models.Hop{
 				{
 					HopType:            models.HopTypeSwap,
@@ -975,13 +1074,13 @@ func quoteSwapBridgeSwap(ctx context.Context, adapters []bridges.Adapter, dexAda
 					continue
 				}
 
-			// Skip bridge results that are missing execution data (e.g. Across without deposit params).
-			if len(bridgeRoute.Hops) == 0 || !hopIsExecutable(bridgeRoute.Hops[len(bridgeRoute.Hops)-1]) {
-				continue
-			}
+				// Skip bridge results that are missing execution data (e.g. Across without deposit params).
+				if len(bridgeRoute.Hops) == 0 || !hopIsExecutable(bridgeRoute.Hops[len(bridgeRoute.Hops)-1]) {
+					continue
+				}
 
-			// Step 3: DEX swap on destination chain: intermediate → dstToken.
-			bridgeOut := firstNonEmpty(bridgeRoute.EstimatedOutputAmount, step1.EstimatedOutputAmount)
+				// Step 3: DEX swap on destination chain: intermediate → dstToken.
+				bridgeOut := firstNonEmpty(bridgeRoute.EstimatedOutputAmount, step1.EstimatedOutputAmount)
 				step3, err := da.GetQuote(ctx, dex.QuoteRequest{
 					TokenInChainID:  req.Destination.ChainID,
 					TokenOutChainID: req.Destination.ChainID,
@@ -995,16 +1094,18 @@ func quoteSwapBridgeSwap(ctx context.Context, adapters []bridges.Adapter, dexAda
 					continue
 				}
 
-				totalFee := mustParseFloat(step1.EstimatedFeeAmount) +
-					mustParseFloat(bridgeRoute.TotalFee) +
-					mustParseFloat(step3.EstimatedFeeAmount)
+				totalFee, feeErr := sumFeeStrings(step1.EstimatedFeeAmount, bridgeRoute.TotalFee, step3.EstimatedFeeAmount)
+				if feeErr != nil {
+					log.Printf("[router] dropped 3-hop route bridge=%s dex=%s reason=%s", ba.ID(), da.ID(), truncateForLog(feeErr.Error(), maxLogErrorLen))
+					continue
+				}
 
 				routeID := fmt.Sprintf("swap:%s->bridge:%s->swap:%s", da.ID(), ba.ID(), da.ID())
 				route := models.Route{
 					RouteID:               routeID,
 					EstimatedOutputAmount: step3.EstimatedOutputAmount,
 					EstimatedTimeSeconds:  30 + bridgeRoute.EstimatedTimeSeconds + 30,
-					TotalFee:              strconv.FormatFloat(totalFee, 'f', -1, 64),
+					TotalFee:              totalFee,
 					Hops: []models.Hop{
 						{
 							HopType:            models.HopTypeSwap,
@@ -1049,6 +1150,18 @@ func quoteSwapBridgeSwap(ctx context.Context, adapters []bridges.Adapter, dexAda
 		return nil, ErrNoRoutes
 	}
 	return out, nil
+}
+
+func sumFeeStrings(fees ...string) (string, error) {
+	total := new(big.Rat)
+	for _, fee := range fees {
+		r, err := parseNonNegativeDecimal(fee)
+		if err != nil {
+			return "", err
+		}
+		total.Add(total, r)
+	}
+	return formatRatDecimal(total), nil
 }
 
 // hopIsExecutable returns true when a bridge hop carries enough provider_data to build

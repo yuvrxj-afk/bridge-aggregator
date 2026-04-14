@@ -35,6 +35,7 @@ export interface Route {
   estimated_output_amount: string;
   estimated_time_seconds: number;
   total_fee: string;
+  quote_expires_at?: string;
   hops: Hop[];
   execution?: ExecutionProfile;
 }
@@ -355,9 +356,10 @@ export function fetchOperations(wallet: string, limit = 50, scope?: string): Pro
 }
 
 // Register an intent to execute a route — called before wallet prompt.
-export function createOperation(route: Route, idempotencyKey?: string): Promise<OperationRecord> {
+export function createOperation(route: Route, walletAddress?: string, idempotencyKey?: string): Promise<OperationRecord> {
   return apiFetch("/execute", {
     route,
+    ...(walletAddress && { wallet_address: walletAddress }),
     ...(idempotencyKey && { idempotency_key: idempotencyKey }),
   });
 }

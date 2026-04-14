@@ -727,7 +727,7 @@ export function ExecutePanel({
 
       // Register operation intent in the DB — best-effort, never blocks execution.
       try {
-        const op = await createOperation(route);
+        const op = await createOperation(route, walletAddress ?? undefined);
         setOperationId(op.operation_id);
       } catch { /* DB may be unavailable — continue without tracking */ }
 

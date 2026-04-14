@@ -88,11 +88,20 @@ func isNativeETH(addr string) bool {
 
 func resolveAmountBaseUnits(req models.QuoteRequest, decimals int) (string, error) {
 	if req.AmountBaseUnits != "" {
+		if err := ethutil.ValidatePositiveUint256String(req.AmountBaseUnits); err != nil {
+			return "", fmt.Errorf("invalid amount_base_units: %w", err)
+		}
 		return req.AmountBaseUnits, nil
 	}
 	if req.Amount == "" {
 		return "", fmt.Errorf("amount or amount_base_units required")
 	}
-	return ethutil.ParseUnitsString(req.Amount, decimals)
+	parsed, err := ethutil.ParseUnitsString(req.Amount, decimals)
+	if err != nil {
+		return "", err
+	}
+	if err := ethutil.ValidatePositiveUint256String(parsed); err != nil {
+		return "", fmt.Errorf("invalid amount: %w", err)
+	}
+	return parsed, nil
 }
-

@@ -166,7 +166,7 @@ func main() {
 		v1.POST("/route/buildTransaction", api.BuildTransactionHandler(adapters))
 		v1.GET("/cctp/attestation/:messageHash", api.CCTPAttestationHandler(cfg.CCTPAttestationURL))
 		v1.GET("/cctp/attestation/stream/:messageHash", api.CCTPAttestationStreamHandler(cfg.CCTPAttestationURL))
-		v1.POST("/intent/parse", intentRL.Limit(), api.IntentParseHandler(cfg.OpenRouterKey))
+		v1.POST("/intent/parse", intentRL.Limit(), apiKeyMW, api.IntentParseHandler(cfg.OpenRouterKey))
 	}
 
 	addr := ":" + cfg.Port

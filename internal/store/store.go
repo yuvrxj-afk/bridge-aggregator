@@ -25,6 +25,7 @@ type Operation struct {
 	Route             models.Route
 	Status            string
 	Network           string // "mainnet" or "testnet"
+	WalletAddress     string // user's wallet address (lowercased on write)
 	ClientReferenceID string
 	IdempotencyKey    string
 	TxHash            string
@@ -110,7 +111,9 @@ CREATE INDEX IF NOT EXISTS operation_events_operation_id_idx
 -- Migrations: safe no-op if columns already exist.
 ALTER TABLE operations ADD COLUMN IF NOT EXISTS tx_hash TEXT;
 ALTER TABLE operations ADD COLUMN IF NOT EXISTS network TEXT NOT NULL DEFAULT 'mainnet';
+ALTER TABLE operations ADD COLUMN IF NOT EXISTS wallet_address TEXT;
 CREATE INDEX IF NOT EXISTS operations_network_idx ON operations(network, created_at DESC);
+CREATE INDEX IF NOT EXISTS operations_wallet_idx ON operations(wallet_address, created_at DESC);
 `
 	_, err := s.DB.Exec(ddl)
 	return err
@@ -134,11 +137,11 @@ func (s *Store) CreateOperation(op Operation) (*Operation, error) {
 	}
 
 	const q = `
-INSERT INTO operations (id, route, status, network, client_reference_id, idempotency_key)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO operations (id, route, status, network, wallet_address, client_reference_id, idempotency_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING created_at, updated_at;
 `
-	row := s.DB.QueryRow(q, op.ID, routeBytes, op.Status, op.Network, nullIfEmpty(op.ClientReferenceID), nullIfEmpty(op.IdempotencyKey))
+	row := s.DB.QueryRow(q, op.ID, routeBytes, op.Status, op.Network, nullIfEmpty(strings.ToLower(op.WalletAddress)), nullIfEmpty(op.ClientReferenceID), nullIfEmpty(op.IdempotencyKey))
 	if err := row.Scan(&op.CreatedAt, &op.UpdatedAt); err != nil {
 		return nil, err
 	}
@@ -281,7 +284,7 @@ SELECT id, route, status, COALESCE(network,'mainnet'),
        created_at, updated_at
 FROM operations
 WHERE network = $2
-  AND lower(route->'source'->>'address') = lower($3)
+  AND wallet_address = lower($3)
 ORDER BY created_at DESC
 LIMIT $1;
 `
@@ -292,7 +295,7 @@ SELECT id, route, status, COALESCE(network,'mainnet'),
        COALESCE(client_reference_id,''), COALESCE(idempotency_key,''), COALESCE(tx_hash,''),
        created_at, updated_at
 FROM operations
-WHERE lower(route->'source'->>'address') = lower($2)
+WHERE wallet_address = lower($2)
 ORDER BY created_at DESC
 LIMIT $1;
 `

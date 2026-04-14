@@ -10,6 +10,7 @@ import (
 
 	"bridge-aggregator/internal/bridges"
 	"bridge-aggregator/internal/dex"
+	"bridge-aggregator/internal/ethutil"
 	"bridge-aggregator/internal/models"
 )
 
@@ -24,6 +25,10 @@ var (
 	ErrHopIndexOutOfRange = errors.New("hop_index out of range")
 	ErrHopNotSupported    = errors.New("hop does not support transaction population")
 	ErrPermitSignatureReq = errors.New("permit signature required for this quote")
+	ErrInvalidAmountField = errors.New("invalid amount field")
+	ErrInvalidValueField  = errors.New("invalid value field")
+	ErrInvalidFeeField    = errors.New("invalid fee field")
+	ErrEncodingGuard      = errors.New("unsafe transaction encoding payload")
 )
 
 type swapProviderData struct {
@@ -226,24 +231,35 @@ func populateBridgeStep(ctx context.Context, h models.Hop, req models.StepTransa
 
 	protocol := jsonString(pd["protocol"])
 
+	var (
+		resp *models.StepTransactionResponse
+		err  error
+	)
 	switch {
 	case protocol == "circle_cctp":
-		return populateCCTPStep(h, pd, req)
+		resp, err = populateCCTPStep(h, pd, req)
 	case protocol == "across_v3":
-		return populateAcrossStep(ctx, h, pd, req, bc)
+		resp, err = populateAcrossStep(ctx, h, pd, req, bc)
 	case protocol == "canonical" && jsonString(pd["bridge"]) == "base":
-		return populateCanonicalStep(h, pd, req, "base")
+		resp, err = populateCanonicalStep(h, pd, req, "base")
 	case protocol == "canonical" && jsonString(pd["bridge"]) == "optimism":
-		return populateCanonicalStep(h, pd, req, "optimism")
+		resp, err = populateCanonicalStep(h, pd, req, "optimism")
 	case protocol == "canonical" && jsonString(pd["bridge"]) == "arbitrum":
-		return populateCanonicalStep(h, pd, req, "arbitrum")
+		resp, err = populateCanonicalStep(h, pd, req, "arbitrum")
 	case protocol == "layerzero_stargate_v2":
-		return populateStargateStep(ctx, h, pd, req, bc)
+		resp, err = populateStargateStep(ctx, h, pd, req, bc)
 	case isProtocolMayan(protocol):
-		return populateMayanStep(ctx, h, pd, req, bc)
+		resp, err = populateMayanStep(ctx, h, pd, req, bc)
 	default:
 		return nil, fmt.Errorf("step transaction not yet supported for bridge %q (protocol=%q)", h.BridgeID, protocol)
 	}
+	if err != nil {
+		return nil, err
+	}
+	if err := validateBridgeParamsAmounts(resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 func isProtocolMayan(p string) bool {
@@ -263,7 +279,10 @@ const cctpDepositForBurnABI = `{"name":"depositForBurn","type":"function","state
 func populateCCTPStep(h models.Hop, pd map[string]json.RawMessage, req models.StepTransactionRequest) (*models.StepTransactionResponse, error) {
 	tokenMessenger := jsonString(pd["token_messenger_src"])
 	burnToken := jsonString(pd["burn_token"])
-	amount := jsonString(pd["amount"])
+	amount, err := derivePositiveAmountForHop(h, pd)
+	if err != nil {
+		return nil, fmt.Errorf("cctp: %w", err)
+	}
 	dstDomain := jsonNumber(pd["dst_domain"])
 	srcChainID, err := requireChainID(h, true)
 	if err != nil {
@@ -274,8 +293,8 @@ func populateCCTPStep(h models.Hop, pd map[string]json.RawMessage, req models.St
 		return nil, fmt.Errorf("cctp: destination %w", err)
 	}
 
-	if tokenMessenger == "" || burnToken == "" || amount == "" {
-		return nil, fmt.Errorf("cctp provider_data incomplete: need token_messenger_src, burn_token, amount")
+	if tokenMessenger == "" || burnToken == "" {
+		return nil, fmt.Errorf("cctp provider_data incomplete: need token_messenger_src and burn_token")
 	}
 
 	// mintRecipient must be the destination EVM address left-padded to bytes32.
@@ -565,18 +584,24 @@ func populateAcrossSwapTxStep(h models.Hop, pd map[string]json.RawMessage, hopIn
 // L1→L2 deposits
 const opStackDepositETHABI = `{"name":"depositETH","type":"function","stateMutability":"payable","inputs":[{"name":"_minGasLimit","type":"uint32"},{"name":"_extraData","type":"bytes"}],"outputs":[]}`
 const opStackDepositERC20ABI = `{"name":"depositERC20","type":"function","stateMutability":"nonpayable","inputs":[{"name":"_l1Token","type":"address"},{"name":"_l2Token","type":"address"},{"name":"_amount","type":"uint256"},{"name":"_minGasLimit","type":"uint32"},{"name":"_extraData","type":"bytes"}],"outputs":[]}`
+
 // L2→L1 withdrawals (OP-stack L2StandardBridge at 0x4200000000000000000000000000000000000010)
 const opStackBridgeETHToABI = `{"name":"bridgeETHTo","type":"function","stateMutability":"payable","inputs":[{"name":"_to","type":"address"},{"name":"_minGasLimit","type":"uint32"},{"name":"_extraData","type":"bytes"}],"outputs":[]}`
 const opStackBridgeERC20ToABI = `{"name":"bridgeERC20To","type":"function","stateMutability":"nonpayable","inputs":[{"name":"_localToken","type":"address"},{"name":"_remoteToken","type":"address"},{"name":"_to","type":"address"},{"name":"_amount","type":"uint256"},{"name":"_minGasLimit","type":"uint32"},{"name":"_extraData","type":"bytes"}],"outputs":[]}`
+
 // Arbitrum L1→L2
 const arbitrumDepositETHABI = `{"name":"depositEth","type":"function","stateMutability":"payable","inputs":[],"outputs":[{"name":"","type":"uint256"}]}`
 const arbitrumOutboundTransferABI = `{"name":"outboundTransfer","type":"function","stateMutability":"payable","inputs":[{"name":"_token","type":"address"},{"name":"_to","type":"address"},{"name":"_amount","type":"uint256"},{"name":"_maxGas","type":"uint256"},{"name":"_gasPriceBid","type":"uint256"},{"name":"_data","type":"bytes"}],"outputs":[{"name":"","type":"bytes"}]}`
+
 // Arbitrum L2→L1 (ArbSys precompile at 0x0000000000000000000000000000000000000064)
 const arbSysWithdrawEthABI = `{"name":"withdrawEth","type":"function","stateMutability":"payable","inputs":[{"name":"destination","type":"address"}],"outputs":[{"name":"","type":"uint256"}]}`
 
 func populateCanonicalStep(h models.Hop, pd map[string]json.RawMessage, req models.StepTransactionRequest, network string) (*models.StepTransactionResponse, error) {
 	hopIndex := req.HopIndex
-	amount := jsonString(pd["amount"])
+	amount, err := derivePositiveAmountForHop(h, pd)
+	if err != nil {
+		return nil, fmt.Errorf("canonical_%s: %w", network, err)
+	}
 	inputToken := jsonString(pd["input_token"])
 	outputToken := jsonString(pd["output_token"])
 	depositOnL1Raw := jsonString(pd["deposit_on_l1"])
@@ -729,7 +754,10 @@ func populateCanonicalStep(h models.Hop, pd map[string]json.RawMessage, req mode
 			gasPriceBid := "200000000" // 0.2 gwei
 
 			// msg.value = maxSubmissionCost + maxGas * gasPriceBid
-			ethValue := arbRetryableValue(maxSubmissionCost, maxGas, gasPriceBid)
+			ethValue, err := arbRetryableValue(maxSubmissionCost, maxGas, gasPriceBid)
+			if err != nil {
+				return nil, fmt.Errorf("canonical_arbitrum: %w", err)
+			}
 
 			// _data = abi.encode(uint256 maxSubmissionCost, bytes(""))
 			encodedData := encodeGatewayRouterData(maxSubmissionCost)
@@ -975,8 +1003,10 @@ func populateMayanStep(ctx context.Context, h models.Hop, pd map[string]json.Raw
 // encodeGatewayRouterData builds the _data parameter for outboundTransfer:
 // abi.encode(uint256 maxSubmissionCost, bytes(""))
 func encodeGatewayRouterData(maxSubmissionCost string) string {
-	mc := new(big.Int)
-	mc.SetString(maxSubmissionCost, 10)
+	mc, err := ethutil.ParseStrictUint256(maxSubmissionCost)
+	if err != nil {
+		mc = big.NewInt(0)
+	}
 	return "0x" +
 		fmt.Sprintf("%064x", mc) +
 		fmt.Sprintf("%064x", 64) + // offset to bytes
@@ -984,15 +1014,21 @@ func encodeGatewayRouterData(maxSubmissionCost string) string {
 }
 
 // arbRetryableValue computes the ETH value: maxSubmissionCost + maxGas * gasPriceBid.
-func arbRetryableValue(maxSubmissionCost, maxGas, gasPriceBid string) string {
-	mc := new(big.Int)
-	mc.SetString(maxSubmissionCost, 10)
-	mg := new(big.Int)
-	mg.SetString(maxGas, 10)
-	gp := new(big.Int)
-	gp.SetString(gasPriceBid, 10)
+func arbRetryableValue(maxSubmissionCost, maxGas, gasPriceBid string) (string, error) {
+	mc, err := ethutil.ParseStrictUint256(maxSubmissionCost)
+	if err != nil {
+		return "", fmt.Errorf("%w: maxSubmissionCost parse failed: %v", ErrInvalidFeeField, err)
+	}
+	mg, err := ethutil.ParseStrictUint256(maxGas)
+	if err != nil {
+		return "", fmt.Errorf("%w: maxGas parse failed: %v", ErrInvalidFeeField, err)
+	}
+	gp, err := ethutil.ParseStrictUint256(gasPriceBid)
+	if err != nil {
+		return "", fmt.Errorf("%w: gasPriceBid parse failed: %v", ErrInvalidFeeField, err)
+	}
 	total := new(big.Int).Add(mc, new(big.Int).Mul(mg, gp))
-	return total.String()
+	return total.String(), nil
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -1025,6 +1061,78 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+func requirePositiveUintField(label, value string) error {
+	if value == "" {
+		return fmt.Errorf("%w: %s is required", ErrEncodingGuard, label)
+	}
+	if err := ethutil.ValidatePositiveUint256String(value); err != nil {
+		return fmt.Errorf("%w: %s: %v", ErrInvalidAmountField, label, err)
+	}
+	return nil
+}
+
+func requireNonNegativeUintField(label, value string) error {
+	if value == "" {
+		return fmt.Errorf("%w: %s is required", ErrEncodingGuard, label)
+	}
+	n, err := ethutil.ParseStrictUint256(value)
+	if err != nil {
+		return fmt.Errorf("%w: %s: %v", ErrInvalidValueField, label, err)
+	}
+	if n.Sign() < 0 {
+		return fmt.Errorf("%w: %s must not be negative", ErrInvalidValueField, label)
+	}
+	return nil
+}
+
+func derivePositiveAmountForHop(h models.Hop, pd map[string]json.RawMessage) (string, error) {
+	amount := strings.TrimSpace(h.AmountInBaseUnits)
+	if amount == "" {
+		amount = strings.TrimSpace(jsonString(pd["amount"]))
+	}
+	if err := requirePositiveUintField("amount", amount); err != nil {
+		return "", err
+	}
+	return amount, nil
+}
+
+func validateBridgeParamsAmounts(resp *models.StepTransactionResponse) error {
+	if resp == nil || resp.BridgeParams == nil {
+		return nil
+	}
+	for i, step := range resp.BridgeParams.Steps {
+		if step.Approval != nil {
+			if err := requirePositiveUintField(fmt.Sprintf("steps[%d].approval.amount", i), step.Approval.Amount); err != nil {
+				return err
+			}
+		}
+		if step.Tx == nil {
+			continue
+		}
+		if step.Tx.Value != "" {
+			if err := requireNonNegativeUintField(fmt.Sprintf("steps[%d].tx.value", i), step.Tx.Value); err != nil {
+				return err
+			}
+		}
+		if v, ok := step.Tx.Params["amount"].(string); ok {
+			if err := requirePositiveUintField(fmt.Sprintf("steps[%d].tx.params.amount", i), v); err != nil {
+				return err
+			}
+		}
+		if v, ok := step.Tx.Params["_amount"].(string); ok {
+			if err := requirePositiveUintField(fmt.Sprintf("steps[%d].tx.params._amount", i), v); err != nil {
+				return err
+			}
+		}
+		if v, ok := step.Tx.Params["inputAmount"].(string); ok {
+			if err := requirePositiveUintField(fmt.Sprintf("steps[%d].tx.params.inputAmount", i), v); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func chainIDFromHop(h models.Hop, src bool) int {

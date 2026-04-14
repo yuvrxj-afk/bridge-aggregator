@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -239,6 +240,56 @@ func TestPopulateStepTransaction_CCTP(t *testing.T) {
 	// Notes should mention Iris attestation API
 	if !strings.Contains(bp.Notes, "iris-api.circle.com") {
 		t.Errorf("Notes should reference iris-api.circle.com, got: %q", bp.Notes)
+	}
+}
+
+func TestPopulateStepTransaction_CCTP_ReDerivesAmountFromHop(t *testing.T) {
+	h := cctpHop()
+	var pd map[string]any
+	if err := json.Unmarshal(h.ProviderData, &pd); err != nil {
+		t.Fatalf("unmarshal provider data: %v", err)
+	}
+	pd["amount"] = "1" // tampered provider_data amount should be ignored
+	h.ProviderData = mustMarshal(pd)
+	h.AmountInBaseUnits = "5000000"
+
+	route := makeRoute(h)
+	req := models.StepTransactionRequest{
+		Route:           route,
+		HopIndex:        0,
+		SenderAddress:   "0x1111111111111111111111111111111111111111",
+		ReceiverAddress: "0x4F8bBccC89D443E6998e52D7B57ce2aE09476328",
+	}
+	resp, err := service.PopulateStepTransaction(context.Background(), nil, nil, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	amount, _ := resp.BridgeParams.Steps[1].Tx.Params["amount"].(string)
+	if amount != "5000000" {
+		t.Fatalf("expected amount from hop value (5000000), got %q", amount)
+	}
+}
+
+func TestPopulateStepTransaction_CCTP_RejectsEmptyAmount(t *testing.T) {
+	h := cctpHop()
+	h.AmountInBaseUnits = ""
+	var pd map[string]any
+	if err := json.Unmarshal(h.ProviderData, &pd); err != nil {
+		t.Fatalf("unmarshal provider data: %v", err)
+	}
+	pd["amount"] = ""
+	h.ProviderData = mustMarshal(pd)
+
+	route := makeRoute(h)
+	req := models.StepTransactionRequest{
+		Route:           route,
+		HopIndex:        0,
+		SenderAddress:   "0x1111111111111111111111111111111111111111",
+		ReceiverAddress: "0x4F8bBccC89D443E6998e52D7B57ce2aE09476328",
+	}
+	_, err := service.PopulateStepTransaction(context.Background(), nil, nil, req)
+	if !errors.Is(err, service.ErrInvalidAmountField) && !errors.Is(err, service.ErrEncodingGuard) {
+		t.Fatalf("expected typed amount guard error, got %v", err)
 	}
 }
 

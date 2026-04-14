@@ -139,7 +139,10 @@ func TestFormatUnits(t *testing.T) {
 
 func TestParseFormatRoundTrip(t *testing.T) {
 	// FormatUnits(ParseUnitsString(x, d), d) == x for exact decimal amounts.
-	cases := []struct{ human string; decimals int }{
+	cases := []struct {
+		human    string
+		decimals int
+	}{
 		{"1.5", 6},
 		{"0.000001", 6},
 		{"1", 18},
@@ -185,11 +188,11 @@ func TestIsAddress(t *testing.T) {
 
 	invalid := []string{
 		"",
-		"0xYourWallet",                                   // placeholder
-		"0x123",                                           // too short
-		"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb4",      // 41 chars
-		"a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",       // no 0x prefix
-		"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb4g",     // invalid hex char 'g'
+		"0xYourWallet", // placeholder
+		"0x123",        // too short
+		"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb4",       // 41 chars
+		"a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",        // no 0x prefix
+		"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb4g",      // invalid hex char 'g'
 		"0x0000000000000000000000000000000000000000extra", // too long
 		"not an address at all",
 	}
@@ -247,5 +250,37 @@ func TestChecksumAddress(t *testing.T) {
 	bad := "not-an-address"
 	if got := ethutil.ChecksumAddress(bad); got != bad {
 		t.Errorf("ChecksumAddress(%q) = %q, want unchanged", bad, got)
+	}
+}
+
+func TestParseStrictUint256(t *testing.T) {
+	valid := []string{
+		"1",
+		"5000000",
+		"115792089237316195423570985008687907853269984665640564039457584007913129639935",
+	}
+	for _, v := range valid {
+		if _, err := ethutil.ParseStrictUint256(v); err != nil {
+			t.Fatalf("expected valid uint256 for %q: %v", v, err)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"0",
+		"-1",
+		"+1",
+		"1e18",
+		"1.5",
+		"1/2",
+		" 1",
+		"1 ",
+		"abc",
+		"115792089237316195423570985008687907853269984665640564039457584007913129639936",
+	}
+	for _, v := range invalid {
+		if err := ethutil.ValidatePositiveUint256String(v); err == nil {
+			t.Fatalf("expected invalid uint256 for %q", v)
+		}
 	}
 }

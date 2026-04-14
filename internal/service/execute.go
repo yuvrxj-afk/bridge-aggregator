@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"bridge-aggregator/internal/bridges"
@@ -13,13 +14,15 @@ import (
 )
 
 var (
-	ErrRouteRequired   = errors.New("route is required in request body")
-	ErrRouteHopsEmpty  = errors.New("route must have at least one hop")
-	ErrUnknownBridgeID = errors.New("route hop bridge_id is not a registered adapter")
-	ErrNoBridgeHop     = errors.New("route must contain at least one bridge hop")
-	ErrInvalidStatus   = errors.New("status must be one of: submitted, completed, failed")
-	ErrInvalidTransition = errors.New("invalid operation status transition")
-	ErrTxHashRequired = errors.New("tx_hash is required when status=submitted")
+	ErrRouteRequired       = errors.New("route is required in request body")
+	ErrRouteHopsEmpty      = errors.New("route must have at least one hop")
+	ErrUnknownBridgeID     = errors.New("route hop bridge_id is not a registered adapter")
+	ErrNoBridgeHop         = errors.New("route must contain at least one bridge hop")
+	ErrQuoteExpiryRequired = errors.New("route.quote_expires_at is required")
+	ErrQuoteExpired        = errors.New("route quote has expired")
+	ErrInvalidStatus       = errors.New("status must be one of: submitted, completed, failed")
+	ErrInvalidTransition   = errors.New("invalid operation status transition")
+	ErrTxHashRequired      = errors.New("tx_hash is required when status=submitted")
 )
 
 var validTransitionStatuses = map[string]bool{
@@ -35,6 +38,16 @@ func ValidateExecuteRequest(req models.ExecuteRequest, adapterIDs map[string]boo
 	}
 	if len(req.Route.Hops) == 0 {
 		return ErrRouteHopsEmpty
+	}
+	if strings.TrimSpace(req.Route.QuoteExpiresAt) == "" {
+		return ErrQuoteExpiryRequired
+	}
+	exp, err := time.Parse(time.RFC3339, req.Route.QuoteExpiresAt)
+	if err != nil {
+		return ErrQuoteExpiryRequired
+	}
+	if time.Now().UTC().After(exp) {
+		return ErrQuoteExpired
 	}
 
 	// Execute is still bridge-centric (recording a bridge operation). For composed routes,
@@ -85,6 +98,7 @@ func Execute(ctx context.Context, s *store.Store, adapters []bridges.Adapter, re
 		ID:                opID,
 		Route:             *req.Route,
 		Status:            models.OperationStatusPending,
+		WalletAddress:     req.WalletAddress,
 		ClientReferenceID: req.ClientReferenceID,
 		IdempotencyKey:    req.IdempotencyKey,
 	}

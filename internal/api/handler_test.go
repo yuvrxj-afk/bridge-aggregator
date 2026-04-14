@@ -30,8 +30,8 @@ type mockBridge struct {
 	err   error
 }
 
-func (m *mockBridge) ID() string                    { return m.id }
-func (m *mockBridge) Tier() models.AdapterTier      { return models.TierProduction }
+func (m *mockBridge) ID() string               { return m.id }
+func (m *mockBridge) Tier() models.AdapterTier { return models.TierProduction }
 func (m *mockBridge) GetQuote(_ context.Context, _ models.QuoteRequest) (*models.Route, error) {
 	return m.route, m.err
 }
@@ -264,6 +264,19 @@ func TestQuoteHandler_BadRequest_MissingAmount(t *testing.T) {
 	w := doRequest(r, http.MethodPost, "/api/v1/quote", reqBody)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status %d, want 400", w.Code)
+	}
+}
+
+func TestQuoteHandler_BadRequest_InvalidAmountBaseUnits(t *testing.T) {
+	r := newTestRouter(nil, nil)
+	reqBody := models.QuoteRequest{
+		Source:          models.Endpoint{ChainID: 1, Chain: "ethereum", Asset: "USDC", TokenAddress: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", TokenDecimals: 6},
+		Destination:     models.Endpoint{ChainID: 8453, Chain: "base", Asset: "USDC", TokenAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bDa02913", TokenDecimals: 6},
+		AmountBaseUnits: "1e6",
+	}
+	w := doRequest(r, http.MethodPost, "/api/v1/quote", reqBody)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400", w.Code)
 	}
 }
 

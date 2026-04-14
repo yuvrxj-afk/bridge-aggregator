@@ -13,10 +13,10 @@ const (
 // ErrorType classifies errors by their recoverability.
 // The frontend uses this to determine what recovery action to offer the user.
 const (
-	ErrorTypeRetryable   = "retryable"    // network blip, rate limit — retry same params
-	ErrorTypeUserAction  = "user_action"  // wallet rejected, wrong chain — user must act
-	ErrorTypeRequote     = "requote"      // quote expired, no routes — get a fresh quote
-	ErrorTypeTerminal    = "terminal"     // contract reverted, invalid data — start over
+	ErrorTypeRetryable  = "retryable"   // network blip, rate limit — retry same params
+	ErrorTypeUserAction = "user_action" // wallet rejected, wrong chain — user must act
+	ErrorTypeRequote    = "requote"     // quote expired, no routes — get a fresh quote
+	ErrorTypeTerminal   = "terminal"    // contract reverted, invalid data — start over
 )
 
 // AdapterTier classifies an adapter's production readiness.
@@ -105,6 +105,7 @@ type Route struct {
 	EstimatedOutputAmount string            `json:"estimated_output_amount"`
 	EstimatedTimeSeconds  int64             `json:"estimated_time_seconds"`
 	TotalFee              string            `json:"total_fee"`
+	QuoteExpiresAt        string            `json:"quote_expires_at,omitempty"`
 	Hops                  []Hop             `json:"hops"`
 	Execution             *ExecutionProfile `json:"execution,omitempty"`
 }
@@ -132,6 +133,7 @@ type ExecuteRequest struct {
 	Route             *Route `json:"route,omitempty"`
 	IdempotencyKey    string `json:"idempotency_key,omitempty"`
 	ClientReferenceID string `json:"client_reference_id,omitempty"`
+	WalletAddress     string `json:"wallet_address,omitempty"`
 }
 
 // ExecuteResponse is the response body for POST /api/v1/execute.
@@ -205,7 +207,7 @@ type BridgeStepCall struct {
 // SolanaTransactionRequest is an unsigned Solana transaction ready for wallet signing.
 type SolanaTransactionRequest struct {
 	// SerializedTx is the base64-encoded transaction bytes (versioned or legacy).
-	SerializedTx    string `json:"serialized_tx"`
+	SerializedTx string `json:"serialized_tx"`
 	// SignerPublicKey is the expected signer's base58 public key.
 	SignerPublicKey string `json:"signer_public_key,omitempty"`
 }
@@ -279,13 +281,13 @@ type UpdateOperationStatusRequest struct {
 // ErrorEnvelope is the standard error response for non-2xx responses.
 type ErrorEnvelope struct {
 	Error struct {
-		Code      string         `json:"code"`
-		Message   string         `json:"message"`
-		Details   map[string]any `json:"details,omitempty"`
+		Code    string         `json:"code"`
+		Message string         `json:"message"`
+		Details map[string]any `json:"details,omitempty"`
 		// ErrorType classifies recoverability: "retryable" | "user_action" | "requote" | "terminal"
-		ErrorType string         `json:"error_type,omitempty"`
+		ErrorType string `json:"error_type,omitempty"`
 		// ErrorCode is a machine-readable sub-type, e.g. "no_routes", "timeout", "invalid_route"
-		ErrorCode string         `json:"error_code,omitempty"`
+		ErrorCode string `json:"error_code,omitempty"`
 	} `json:"error"`
 }
 

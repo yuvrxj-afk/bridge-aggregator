@@ -1,12 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -69,6 +69,10 @@ func Quote(ctx context.Context, adapters []bridges.Adapter, dexAdapters []dex.Ad
 	if len(routes) == 0 {
 		return &models.QuoteResponse{Routes: nil}, router.ErrNoRoutes
 	}
+	expiresAt := time.Now().Add(90 * time.Second).UTC().Format(time.RFC3339)
+	for i := range routes {
+		routes[i].QuoteExpiresAt = expiresAt
+	}
 	return &models.QuoteResponse{Routes: routes}, nil
 }
 
@@ -108,6 +112,7 @@ func filterMinInputValue(ctx context.Context, routes []models.Route) []models.Ro
 	if err != nil || len(prices) == 0 {
 		prices = stablecoinFallbackPrices
 	}
+	minUSD := new(big.Rat).SetFloat64(minBridgeInputUSD)
 	out := make([]models.Route, 0, len(routes))
 	for _, r := range routes {
 		if len(r.Hops) == 0 {
@@ -121,7 +126,7 @@ func filterMinInputValue(ctx context.Context, routes []models.Route) []models.Ro
 			continue
 		}
 		srcUSD, ok := amountUSD(first.FromChain, first.FromAsset, first.AmountInBaseUnits, prices)
-		if !ok || srcUSD >= minBridgeInputUSD {
+		if !ok || srcUSD.Cmp(minUSD) >= 0 {
 			out = append(out, r)
 			continue
 		}
@@ -145,10 +150,10 @@ var coingeckoIDBySymbol = map[string]string{
 // stablecoinFallbackPrices provides a hardcoded $1.00 price for known stablecoins
 // when CoinGecko is unavailable. This keeps USD sanity filtering active for the
 // most common bridging assets even during price API outages.
-var stablecoinFallbackPrices = map[string]float64{
-	"usd-coin": 1.0,
-	"tether":   1.0,
-	"dai":      1.0,
+var stablecoinFallbackPrices = map[string]*big.Rat{
+	"usd-coin": new(big.Rat).SetInt64(1),
+	"tether":   new(big.Rat).SetInt64(1),
+	"dai":      new(big.Rat).SetInt64(1),
 }
 
 // filterSaneRoutesWithReference enforces strict market sanity on top of numeric sanity.
@@ -174,17 +179,19 @@ func filterSaneRoutesWithReference(ctx context.Context, routes []models.Route) [
 
 		srcUSD, okIn := amountUSD(first.FromChain, first.FromAsset, first.AmountInBaseUnits, prices)
 		dstUSD, okOut := amountUSD(last.ToChain, last.ToAsset, r.EstimatedOutputAmount, prices)
-		if !okIn || !okOut || srcUSD <= 0 || dstUSD <= 0 {
+		if !okIn || !okOut || srcUSD.Sign() <= 0 || dstUSD.Sign() <= 0 {
 			// If we cannot price both sides reliably, keep route (avoid false negatives).
 			out = append(out, r)
 			continue
 		}
 
-		ratio := dstUSD / srcUSD
+		ratio := new(big.Rat).Quo(dstUSD, srcUSD)
+		minRatio := new(big.Rat).SetFrac(big.NewInt(2), big.NewInt(5)) // 0.40
+		maxRatio := new(big.Rat).SetFrac(big.NewInt(5), big.NewInt(2)) // 2.50
 		// Conservative production rails:
 		// - below 40% value retention is likely broken quoting/decimals/liquidity anomaly
 		// - above 250% is likely a pricing/parsing bug
-		if ratio < 0.40 || ratio > 2.50 || math.IsNaN(ratio) || math.IsInf(ratio, 0) {
+		if ratio.Cmp(minRatio) < 0 || ratio.Cmp(maxRatio) > 0 {
 			continue
 		}
 		out = append(out, r)
@@ -192,27 +199,27 @@ func filterSaneRoutesWithReference(ctx context.Context, routes []models.Route) [
 	return out
 }
 
-func amountUSD(chainName, symbol, baseUnits string, prices map[string]float64) (float64, bool) {
+func amountUSD(chainName, symbol, baseUnits string, prices map[string]*big.Rat) (*big.Rat, bool) {
 	if baseUnits == "" {
-		return 0, false
+		return nil, false
 	}
 	priceID, ok := coingeckoIDBySymbol[strings.ToUpper(symbol)]
 	if !ok {
-		return 0, false
+		return nil, false
 	}
 	price, ok := prices[priceID]
-	if !ok || price <= 0 {
-		return 0, false
+	if !ok || price == nil || price.Sign() <= 0 {
+		return nil, false
 	}
 	decimals := tokenDecimalsByChainSymbol(chainName, symbol)
 	if decimals <= 0 {
-		return 0, false
+		return nil, false
 	}
-	amt, err := formatUnitsFloat(baseUnits, decimals)
-	if err != nil || amt <= 0 {
-		return 0, false
+	amt, err := formatUnitsRat(baseUnits, decimals)
+	if err != nil || amt.Sign() <= 0 {
+		return nil, false
 	}
-	return amt * price, true
+	return new(big.Rat).Mul(amt, price), true
 }
 
 func tokenDecimalsByChainSymbol(chainName, symbol string) int {
@@ -231,22 +238,19 @@ func tokenDecimalsByChainSymbol(chainName, symbol string) int {
 	return t.Decimals
 }
 
-func formatUnitsFloat(baseUnits string, decimals int) (float64, error) {
+func formatUnitsRat(baseUnits string, decimals int) (*big.Rat, error) {
 	v, ok := new(big.Int).SetString(baseUnits, 10)
 	if !ok {
-		return 0, fmt.Errorf("invalid big integer")
+		return nil, fmt.Errorf("invalid big integer")
 	}
 	if decimals == 0 {
-		f, _ := new(big.Rat).SetInt(v).Float64()
-		return f, nil
+		return new(big.Rat).SetInt(v), nil
 	}
 	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
-	r := new(big.Rat).SetFrac(v, scale)
-	f, _ := r.Float64()
-	return f, nil
+	return new(big.Rat).SetFrac(v, scale), nil
 }
 
-func fetchReferencePricesUSD(ctx context.Context) (map[string]float64, error) {
+func fetchReferencePricesUSD(ctx context.Context) (map[string]*big.Rat, error) {
 	ids := make([]string, 0, len(coingeckoIDBySymbol))
 	seen := map[string]bool{}
 	for _, id := range coingeckoIDBySymbol {
@@ -278,15 +282,22 @@ func fetchReferencePricesUSD(ctx context.Context) (map[string]float64, error) {
 	if err != nil {
 		return nil, err
 	}
-	var raw map[string]map[string]float64
-	if err := json.Unmarshal(body, &raw); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var raw map[string]map[string]json.Number
+	if err := dec.Decode(&raw); err != nil {
 		return nil, err
 	}
-	out := make(map[string]float64, len(raw))
+	outRat := make(map[string]*big.Rat, len(raw))
 	for id, row := range raw {
-		if usd, ok := row["usd"]; ok && usd > 0 {
-			out[id] = usd
+		usd, ok := row["usd"]
+		if !ok {
+			continue
+		}
+		r, ok := new(big.Rat).SetString(usd.String())
+		if ok && r.Sign() > 0 {
+			outRat[id] = r
 		}
 	}
-	return out, nil
+	return outRat, nil
 }
