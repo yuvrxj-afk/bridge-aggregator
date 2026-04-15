@@ -76,8 +76,16 @@ func (a AcrossAdapter) GetQuote(ctx context.Context, req models.QuoteRequest) (*
 			"cross_swap_type": "bridgeable",
 			"deposit":         dep,
 		})
+		routeID := fmt.Sprintf(
+			"across:%s:%s:%s:%s:%s",
+			firstNonEmptyString(req.Source.Chain, src.ChainKey),
+			firstNonEmptyString(req.Destination.Chain, dst.ChainKey),
+			src.Symbol,
+			dst.Symbol,
+			"bridgeable",
+		)
 		return &models.Route{
-			RouteID:               "across",
+			RouteID:               routeID,
 			EstimatedOutputAmount: dep.OutputAmount,
 			EstimatedTimeSeconds:  0,
 			TotalFee:              "0",
@@ -140,9 +148,17 @@ func (a AcrossAdapter) GetQuote(ctx context.Context, req models.QuoteRequest) (*
 		pdPayload["deposit"] = dep
 	}
 	providerData, _ := json.Marshal(pdPayload)
+	routeID := fmt.Sprintf(
+		"across:%s:%s:%s:%s:%s",
+		firstNonEmptyString(req.Source.Chain, src.ChainKey),
+		firstNonEmptyString(req.Destination.Chain, dst.ChainKey),
+		src.Symbol,
+		dst.Symbol,
+		q.CrossSwapType,
+	)
 
 	return &models.Route{
-		RouteID:               "across",
+		RouteID:               routeID,
 		Score:                 0,
 		EstimatedOutputAmount: outputAmount,
 		EstimatedTimeSeconds:  timeSec,

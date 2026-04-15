@@ -41,6 +41,16 @@ function SwapPage() {
   const [safeOnly, setSafeOnly] = useState<boolean>(() => {
     try { return window.localStorage.getItem("safe_routes_only") === "true"; } catch { return false; }
   });
+  const [confirmedOnly, setConfirmedOnly] = useState<boolean>(() => {
+    // For demo/battle-testing we default to showing everything we can quote.
+    // Users can toggle back to "confirmed-only" to hide unverified providers.
+    try {
+      const v = window.localStorage.getItem("confirmed_routes_only");
+      if (v === "true") return true;
+      if (v === "false") return false;
+    } catch { /* ignore */ }
+    return false;
+  });
 
   // Listen for intents dispatched by IntentPanel.
   useEffect(() => {
@@ -95,11 +105,16 @@ function SwapPage() {
 
   const sortedRoutes = (() => {
     let items = [...routes];
-    // Only show routes where every hop uses a CONFIRMED provider.
-    // See apps/web/src/config/providers.ts — one place to promote a provider.
-    items = items.filter(
-      (r) => r.hops.every((h) => VISIBLE_PROVIDERS.has(h.bridge_id)),
-    );
+    if (confirmedOnly) {
+      // Only show routes where every BRIDGE hop uses a CONFIRMED provider.
+      // (Swap hops use bridge_id to store the DEX id; filtering all hops hides valid multi-hop routes.)
+      // See apps/web/src/config/providers.ts — one place to promote a provider.
+      items = items.filter((r) =>
+        r.hops
+          .filter((h) => h.hop_type === "bridge")
+          .every((h) => VISIBLE_PROVIDERS.has(h.bridge_id)),
+      );
+    }
     if (safeOnly) {
       items = items.filter((r) => r.execution?.guarantee === "relay_fill_or_refund");
     }
@@ -175,6 +190,27 @@ function SwapPage() {
                 <QuoteSummaryCard route={bestRoute} onEdit={handleEdit} />
               </div>
               <div className="xl:ml-auto flex items-center gap-2 self-start mt-1">
+                {/* Confirmed Providers Only toggle */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !confirmedOnly;
+                    setConfirmedOnly(next);
+                    try { window.localStorage.setItem("confirmed_routes_only", String(next)); } catch { /* ignore */ }
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider transition-colors border"
+                  style={{
+                    backgroundColor: confirmedOnly ? "rgba(190,194,255,0.12)" : "transparent",
+                    borderColor: confirmedOnly ? "rgba(190,194,255,0.40)" : "rgba(69,69,85,0.40)",
+                    color: confirmedOnly ? "#bec2ff" : "#908fa1",
+                  }}
+                  title="Only show routes whose bridge hop uses a receipt-confirmed provider"
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: "13px", fontVariationSettings: "'FILL' 1" }}>
+                    filter_alt
+                  </span>
+                  Confirmed only
+                </button>
                 {/* Safe Routes Only toggle */}
                 <button
                   type="button"
@@ -224,7 +260,7 @@ function SwapPage() {
                 <p className="text-[11px] text-[#908fa1]">
                   {loading
                     ? `${routes.length} route${routes.length !== 1 ? "s" : ""} found · searching for more…`
-                    : `${routes.length} route${routes.length !== 1 ? "s" : ""} aggregated from integrated providers · select one to execute`}
+                    : `${sortedRoutes.length} of ${routes.length} route${routes.length !== 1 ? "s" : ""} shown · aggregated from integrated providers`}
                 </p>
               </div>
 

@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { TOKENS } from "../tokens";
 import { TokenIcon } from "./TokenIcon";
 import { type Route, type Hop } from "../api";
+import { CONFIRMED_PROVIDERS } from "../config/providers";
 
 // ── Chain helpers ────────────────────────────────────────────────────────────
 
@@ -145,6 +146,48 @@ function IntentChip({ exec }: { exec?: { intent?: string; supported?: boolean; r
           {tip}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Verification badge (demo UX) ──────────────────────────────────────────────
+
+function VerificationBadge({ route }: { route: Route }) {
+  // Only consider BRIDGE hops for "receipt-confirmed" status; swap hops are DEXes.
+  const bridgeHops = route.hops.filter((h) => h.hop_type === "bridge");
+  if (bridgeHops.length === 0) return null;
+
+  const unverified = Array.from(
+    new Set(bridgeHops.map((h) => h.bridge_id).filter((id) => !CONFIRMED_PROVIDERS.has(id))),
+  );
+  const verified = unverified.length === 0;
+
+  const label = verified ? "Verified" : "Unverified";
+  const icon = verified ? "verified" : "science";
+  const color = verified ? "#4ade80" : "#fbbf24";
+  const bg = verified ? "rgba(74,222,128,0.10)" : "rgba(251,191,36,0.10)";
+  const border = verified ? "rgba(74,222,128,0.25)" : "rgba(251,191,36,0.25)";
+  const tip = verified
+    ? "Receipt-confirmed provider(s) only."
+    : `Not receipt-confirmed yet: ${unverified.map(hopLabel).join(", ")}. Quote is shown for battle-testing.`;
+
+  return (
+    <div className="relative group/vbadge">
+      <span
+        className="flex items-center gap-1 text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 cursor-default"
+        style={{ color, backgroundColor: bg, border: `1px solid ${border}` }}
+      >
+        <span className="material-symbols-outlined" style={{ fontSize: "11px", fontVariationSettings: "'FILL' 1" }}>
+          {icon}
+        </span>
+        {label}
+      </span>
+      <div
+        className="absolute bottom-full left-0 mb-1.5 w-64 px-3 py-2 text-[11px] leading-relaxed pointer-events-none opacity-0 group-hover/vbadge:opacity-100 transition-opacity z-20"
+        style={{ backgroundColor: "#1c1b1b", border: "1px solid rgba(69,69,85,0.6)", color: "#c6c5d8" }}
+      >
+        {tip}
+      </div>
     </div>
   );
 }
@@ -325,6 +368,7 @@ export function RouteCard({ route, isBest, selected, onSelect }: Props) {
               Best Route
             </span>
           )}
+          <VerificationBadge route={route} />
           <GuaranteeBadge guarantee={exec?.guarantee} reasons={exec?.reasons} />
         </div>
         <IntentChip exec={exec} />

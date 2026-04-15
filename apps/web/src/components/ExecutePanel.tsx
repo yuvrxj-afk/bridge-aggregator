@@ -510,6 +510,7 @@ export function ExecutePanel({
   const [cctpClaimDone, setCctpClaimDone] = useState(false);
   // Operation tracking — populated after createOperation succeeds
   const [operationId, setOperationId] = useState("");
+  const [operationTrackError, setOperationTrackError] = useState<string>("");
   // Success modal
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   // Bridge elapsed time counter
@@ -579,6 +580,7 @@ export function ExecutePanel({
     setCctpPollCount(0);
     setCctpClaimDone(false);
     setOperationId("");
+    setOperationTrackError("");
   }, [route.route_id]);
 
   // Persist operation status to DB on every significant phase transition.
@@ -731,7 +733,11 @@ export function ExecutePanel({
       try {
         const op = await createOperation(route, walletAddress ?? undefined);
         setOperationId(op.operation_id);
-      } catch { /* DB may be unavailable — continue without tracking */ }
+        setOperationTrackError("");
+      } catch (e) {
+        // Don't silently fail — demos look broken if ops never appear.
+        setOperationTrackError(e instanceof Error ? e.message : "Failed to create operation (DB tracking unavailable)");
+      }
 
       if (canUseLiFi && !useMultiStep) {
         // ── LiFi Diamond path ──
@@ -1553,13 +1559,20 @@ export function ExecutePanel({
                   Quote expired — go back and re-quote
                 </div>
               ) : (
-                <button
-                  onClick={handleExecute}
-                  disabled={needsChainSwitch || !walletAddress}
-                  className="h-12 w-full bg-accent text-surface text-sm font-bold uppercase tracking-[0.15em] transition-all hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  {isCanonicalWithdrawal ? "Initiate Withdrawal" : "Execute"}
-                </button>
+                <div className="space-y-2">
+                  <button
+                    onClick={handleExecute}
+                    disabled={needsChainSwitch || !walletAddress}
+                    className="h-12 w-full bg-accent text-surface text-sm font-bold uppercase tracking-[0.15em] transition-all hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    {isCanonicalWithdrawal ? "Initiate Withdrawal" : "Execute"}
+                  </button>
+                  {operationTrackError && (
+                    <div className="text-[11px] font-mono leading-relaxed" style={{ color: "#ffb4ab" }}>
+                      Operation tracking unavailable: {operationTrackError}
+                    </div>
+                  )}
+                </div>
               )
             ) : isActive ? (
               <button disabled className="h-12 w-full text-on-surface-variant text-sm flex items-center justify-center gap-3" style={{ backgroundColor: "#1c1b1b", border: "1px solid rgba(69,69,85,0.40)" }}>

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -78,6 +79,19 @@ func NewStore(databaseURL string) (*Store, error) {
 }
 
 func (s *Store) initSchema() error {
+	// The dev script starts two API processes (mainnet + testnet) simultaneously.
+	// Without coordination, both can try to run DDL at the same time and deadlock.
+	//
+	// Use a global advisory lock to serialize schema init/migrations.
+	const lockID int64 = 771337001 // stable constant; unique within this app
+	if _, err := s.DB.Exec(`SELECT pg_advisory_lock($1);`, lockID); err != nil {
+		return fmt.Errorf("store: acquire schema lock: %w", err)
+	}
+	defer func() {
+		// Best-effort unlock; ignore errors because initSchema will return primary error.
+		_, _ = s.DB.Exec(`SELECT pg_advisory_unlock($1);`, lockID)
+	}()
+
 	const ddl = `
 CREATE TABLE IF NOT EXISTS operations (
   id TEXT PRIMARY KEY,

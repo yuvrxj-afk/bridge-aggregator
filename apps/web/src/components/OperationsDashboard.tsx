@@ -468,7 +468,10 @@ export function OperationsDashboard() {
     }
     setOpsLoading(true);
     try {
-      const data = await fetchOperations(wallet, 50, scope);
+      // Fetch across all scopes. If the UI chain-scope toggle drifts from the
+      // API instance that created the operation (mainnet vs testnet), we still
+      // want operations to appear for recovery/debug.
+      const data = await fetchOperations(wallet, 50);
       if (cancelled.v) return;
       setOps(data.operations ?? []);
       setOpsError(null);
