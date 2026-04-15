@@ -65,6 +65,18 @@ var cctpMessageTransmitter = map[ChainID]string{
 	ChainIDPolygon:  "0xF3be9355363857F3e001be68856A2f96b4C39Ba9",
 }
 
+// CCTPContractsForChainID exposes the CCTP registry for API/clients.
+// Returns tokenMessenger, messageTransmitter, domain, ok.
+func CCTPContractsForChainID(chainID ChainID) (string, string, uint32, bool) {
+	tm, ok1 := cctpTokenMessenger[chainID]
+	mt, ok2 := cctpMessageTransmitter[chainID]
+	d, ok3 := cctpDomainID[chainID]
+	if !ok1 || !ok2 || !ok3 || tm == "" || mt == "" {
+		return "", "", 0, false
+	}
+	return tm, mt, d, true
+}
+
 // registerCCTPTestnetChains adds Sepolia testnet chain IDs and contract addresses to the CCTP
 // registries. Called by RegisterTestnetChains() when NETWORK=testnet. Safe to call multiple times.
 // Testnet contract addresses sourced from https://developers.circle.com/stablecoins/evm-smart-contracts

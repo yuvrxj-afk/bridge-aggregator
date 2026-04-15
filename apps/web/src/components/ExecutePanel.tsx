@@ -20,6 +20,7 @@ import {
   patchOperationStatus,
 } from "../api";
 import { savePendingClaim } from "../lib/pendingClaims";
+import { fetchCCTPContracts } from "../api";
 import { TokenIcon } from "./TokenIcon";
 import { ChainIcon } from "./ChainIcon";
 import { TOKENS } from "../tokens";
@@ -271,6 +272,7 @@ const APPROVE_SELECTOR = "0x095ea7b3";
 
 // keccak256("MessageSent(bytes)") — emitted by TokenMessenger on depositForBurn.
 const MESSAGE_SENT_TOPIC = "0x8c5261668696ce22758910d05bab8f186d6eb247ceac2af2e82c7dc17669b036";
+
 
 // ── Allowance helpers ─────────────────────────────────────────────────────────
 
@@ -894,6 +896,47 @@ export function ExecutePanel({
                 setTxHash(hash);
                 setPhase("cctp_claim_saved");
                 return; // burn done — user claims later via the Pending Claims panel
+              }
+
+              // Across can sometimes route USDC via CCTP under the hood (swapTx-based routes).
+              // In that case, the deposit tx will emit MessageSent(bytes) and the user MUST claim
+              // on the destination chain via receiveMessage. Detect this and save a pending claim.
+              try {
+                const receipt = await publicClient!.waitForTransactionReceipt({ hash, retryCount: 60 });
+                const sentLog = receipt.logs.find(l => l.topics[0]?.toLowerCase() === MESSAGE_SENT_TOPIC);
+                if (sentLog) {
+                  const [messageBytes] = decodeAbiParameters(
+                    [{ type: "bytes" }],
+                    sentLog.data as `0x${string}`,
+                  );
+                  const messageHash = keccak256(messageBytes as `0x${string}`);
+                  const reg = await fetchCCTPContracts(dstChainId).catch(() => null);
+                  const claimContract = reg?.message_transmitter ?? "";
+                  if (claimContract && claimContract.startsWith("0x") && claimContract.length === 42) {
+                    savePendingClaim({
+                      id: crypto.randomUUID(),
+                      messageHash,
+                      messageBytes: messageBytes as string,
+                      claimContract,
+                      claimChainId: dstChainId,
+                      srcTxHash: hash,
+                      srcChainId,
+                      amount: srcHop.amount_in_base_units ?? "0",
+                      fromAsset: srcHop.from_asset,
+                      toAsset: dstHop.to_asset,
+                      fromChain: srcHop.from_chain,
+                      toChain: dstHop.to_chain,
+                      decimals: srcDec,
+                      savedAt: Date.now(),
+                      ...(operationId && { operationId }),
+                    });
+                    setTxHash(hash);
+                    setPhase("cctp_claim_saved");
+                    return;
+                  }
+                }
+              } catch {
+                // Ignore — normal bridge flow continues below.
               }
               continue;
             }

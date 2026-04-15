@@ -321,6 +321,20 @@ export function fetchTransactionStatus(txHash: string): Promise<{ status: string
   return apiGet(`/status/${txHash}`);
 }
 
+// ── CCTP registry ─────────────────────────────────────────────────────────────
+
+export type CCTPContractsResponse = {
+  chain_id: number;
+  token_messenger: string;
+  message_transmitter: string;
+  domain: number;
+};
+
+export function fetchCCTPContracts(chainId: number): Promise<CCTPContractsResponse> {
+  const params = new URLSearchParams({ chain_id: String(chainId) });
+  return apiGet(`/cctp/contracts?${params}`);
+}
+
 // ── Operation lifecycle ───────────────────────────────────────────────────────
 
 export interface OperationRecord {

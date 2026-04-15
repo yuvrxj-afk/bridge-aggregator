@@ -932,6 +932,45 @@ func CCTPAttestationStreamHandler(attestationURL string) gin.HandlerFunc {
 	}
 }
 
+// CCTPContractsHandler returns Circle CCTP contract addresses for a given chain_id.
+// This is a small registry endpoint so the frontend doesn't hardcode critical addresses.
+//
+//	GET /api/v1/cctp/contracts?chain_id=84532
+//
+// Response:
+//  {
+//    "chain_id": 84532,
+//    "token_messenger": "0x...",
+//    "message_transmitter": "0x...",
+//    "domain": 6
+//  }
+func CCTPContractsHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		q := strings.TrimSpace(c.Query("chain_id"))
+		if q == "" {
+			RespondError(c, http.StatusBadRequest, CodeInvalidRequest, "chain_id query parameter is required", nil)
+			return
+		}
+		n, err := strconv.Atoi(q)
+		if err != nil || n <= 0 {
+			RespondError(c, http.StatusBadRequest, CodeInvalidRequest, "chain_id must be a positive integer", nil)
+			return
+		}
+
+		tokenMessenger, messageTransmitter, domain, ok := bridges.CCTPContractsForChainID(bridges.ChainID(n))
+		if !ok {
+			RespondError(c, http.StatusNotFound, CodeInvalidRequest, "cctp contracts not found for chain_id", nil)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"chain_id":            n,
+			"token_messenger":     tokenMessenger,
+			"message_transmitter": messageTransmitter,
+			"domain":              domain,
+		})
+	}
+}
+
 // IntentParseHandler parses a natural language intent string using configured LLM providers.
 // POST /api/v1/intent/parse — body: {"text":"bridge 10 USDC from Ethereum to Base"}
 // Returns: {"amount":"10","src_token":"USDC","dst_token":"USDC","src_chain":"ethereum","dst_chain":"base"}

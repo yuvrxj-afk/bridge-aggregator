@@ -167,6 +167,7 @@ func main() {
 		v1.POST("/route/buildTransaction", api.BuildTransactionHandler(adapters))
 		v1.GET("/cctp/attestation/:messageHash", api.CCTPAttestationHandler(cfg.CCTPAttestationURL))
 		v1.GET("/cctp/attestation/stream/:messageHash", api.CCTPAttestationStreamHandler(cfg.CCTPAttestationURL))
+		v1.GET("/cctp/contracts", api.CCTPContractsHandler())
 		v1.POST("/intent/parse", intentRL.Limit(), apiKeyMW, api.IntentParseHandler(intent.ProviderConfig{
 			GeminiAPIKey:  cfg.GeminiAPIKey,
 			GeminiModel:   cfg.GeminiModel,
