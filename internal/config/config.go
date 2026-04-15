@@ -23,14 +23,14 @@ type Config struct {
 
 	// Testnet RPC endpoints — only used when NETWORK=testnet.
 	// Defaults are public free-tier endpoints; override with Alchemy/Infura for reliability.
-	SepoliaRPCURL        string
-	BaseSepoliaRPCURL    string
+	SepoliaRPCURL         string
+	BaseSepoliaRPCURL     string
 	ArbitrumSepoliaRPCURL string
-	OPSepoliaRPCURL      string
+	OPSepoliaRPCURL       string
 
-	AcrossAPIURL      string
-	AcrossAPIKey      string
-	AcrossDepositor   string // wallet address used as depositor in Across quotes
+	AcrossAPIURL    string
+	AcrossAPIKey    string
+	AcrossDepositor string // wallet address used as depositor in Across quotes
 
 	StargateAPIURL string
 	StargateAPIKey string
@@ -52,6 +52,8 @@ type Config struct {
 	OneInchSwapper    string // wallet used for swap tx building (from=)
 
 	OpenRouterKey string // OpenRouter API key for intent parsing (optional)
+	GeminiAPIKey  string // Gemini API key for intent parsing (optional; preferred when set)
+	GeminiModel   string // Gemini model name, e.g. "gemini-2.0-flash"
 
 	// APIKey is a static shared secret for mutating API endpoints (/execute, PATCH /operations/:id/status).
 	// Set via API_KEY env var. If empty, mutating endpoints are unprotected — do not run in production without this.
@@ -95,6 +97,8 @@ func Load() (*Config, error) {
 	viper.SetDefault("oneinch_api_version", "v6.1")
 	viper.SetDefault("oneinch_swapper", "")
 	viper.SetDefault("openrouter_key", "")
+	viper.SetDefault("gemini_api_key", "")
+	viper.SetDefault("gemini_model", "gemini-2.0-flash")
 	viper.SetDefault("api_key", "")
 	viper.AutomaticEnv()
 
@@ -106,23 +110,23 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		Port:        viper.GetString("port"),
-		DatabaseURL: viper.GetString("database_url"),
-		RPCURL:      viper.GetString("rpc_url"),
-		Network:             viper.GetString("network"),
-		CCTPAttestationURL:  viper.GetString("cctp_attestation_url"),
+		Port:                  viper.GetString("port"),
+		DatabaseURL:           viper.GetString("database_url"),
+		RPCURL:                viper.GetString("rpc_url"),
+		Network:               viper.GetString("network"),
+		CCTPAttestationURL:    viper.GetString("cctp_attestation_url"),
 		SepoliaRPCURL:         viper.GetString("sepolia_rpc_url"),
 		BaseSepoliaRPCURL:     viper.GetString("base_sepolia_rpc_url"),
 		ArbitrumSepoliaRPCURL: viper.GetString("arbitrum_sepolia_rpc_url"),
 		OPSepoliaRPCURL:       viper.GetString("op_sepolia_rpc_url"),
 
-		AcrossAPIURL:    viper.GetString("across_api_url"),
-		AcrossAPIKey:    viper.GetString("across_api_key"),
-		AcrossDepositor: viper.GetString("across_depositor"),
-		StargateAPIURL:    viper.GetString("stargate_api_url"),
-		StargateAPIKey:     viper.GetString("stargate_api_key"),
-		BlockdaemonAPIURL:  viper.GetString("blockdaemon_api_url"),
-		BlockdaemonAPIKey:  viper.GetString("blockdaemon_api_key"),
+		AcrossAPIURL:         viper.GetString("across_api_url"),
+		AcrossAPIKey:         viper.GetString("across_api_key"),
+		AcrossDepositor:      viper.GetString("across_depositor"),
+		StargateAPIURL:       viper.GetString("stargate_api_url"),
+		StargateAPIKey:       viper.GetString("stargate_api_key"),
+		BlockdaemonAPIURL:    viper.GetString("blockdaemon_api_url"),
+		BlockdaemonAPIKey:    viper.GetString("blockdaemon_api_key"),
 		UniswapAPIURL:        viper.GetString("uniswap_api_url"),
 		UniswapAPIKey:        viper.GetString("uniswap_api_key"),
 		UniswapSwapperWallet: viper.GetString("uniswap_swapper_wallet"),
@@ -134,7 +138,19 @@ func Load() (*Config, error) {
 		OneInchAPIVersion:    viper.GetString("oneinch_api_version"),
 		OneInchSwapper:       viper.GetString("oneinch_swapper"),
 		OpenRouterKey:        viper.GetString("openrouter_key"),
+		GeminiAPIKey:         viper.GetString("gemini_api_key"),
+		GeminiModel:          viper.GetString("gemini_model"),
 		APIKey:               viper.GetString("api_key"),
+	}
+
+	// Testnet safety default: if operator didn't override Across API URL, switch to
+	// Across testnet endpoint when NETWORK=testnet.
+	// This preserves explicit overrides while preventing accidental mainnet API usage
+	// with testnet chain IDs (which yields no routes).
+	if strings.EqualFold(cfg.Network, "testnet") {
+		if strings.TrimSpace(cfg.AcrossAPIURL) == "" || strings.TrimSpace(cfg.AcrossAPIURL) == "https://app.across.to/api" {
+			cfg.AcrossAPIURL = "https://testnet.across.to/api"
+		}
 	}
 	return cfg, nil
 }

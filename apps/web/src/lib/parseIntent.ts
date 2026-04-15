@@ -1,4 +1,5 @@
 import { CHAINS, TOKENS } from "../tokens";
+import type { ParsedIntentResponse } from "../api";
 
 export interface ParsedIntent {
   amount: string;
@@ -6,6 +7,12 @@ export interface ParsedIntent {
   dstToken: string;
   srcChain: string;  // canonical chain name, e.g. "ethereum", "base-sepolia"
   dstChain: string;
+}
+
+export interface IntentExecuteEventDetail {
+  parsed: ParsedIntent;
+  autoQuote?: boolean;
+  requestId?: number;
 }
 
 // Build chain alias map from the CHAINS array + manual aliases
@@ -68,6 +75,42 @@ function resolveToken(text: string): string | null {
   const t = text.toLowerCase().trim();
   if (KNOWN_TOKENS.has(t)) return t.toUpperCase();
   return null;
+}
+
+const MAINNET_TO_TESTNET: Record<string, string> = {
+  ethereum: "sepolia",
+  base: "base-sepolia",
+  arbitrum: "arbitrum-sepolia",
+  optimism: "op-sepolia",
+};
+
+const TESTNET_TO_MAINNET: Record<string, string> = {
+  sepolia: "ethereum",
+  "base-sepolia": "base",
+  "arbitrum-sepolia": "arbitrum",
+  "op-sepolia": "optimism",
+};
+
+function isTestnetChainName(name: string): boolean {
+  return name === "sepolia" || name.endsWith("-sepolia");
+}
+
+function coerceNetworkFamily(parsed: ParsedIntent): ParsedIntent {
+  const src = parsed.srcChain;
+  const dst = parsed.dstChain;
+  if (!src || !dst) return parsed;
+
+  const srcIsTestnet = isTestnetChainName(src);
+  const dstIsTestnet = isTestnetChainName(dst);
+  if (srcIsTestnet === dstIsTestnet) return parsed;
+
+  if (srcIsTestnet && MAINNET_TO_TESTNET[dst]) {
+    return { ...parsed, dstChain: MAINNET_TO_TESTNET[dst] };
+  }
+  if (!srcIsTestnet && TESTNET_TO_MAINNET[dst]) {
+    return { ...parsed, dstChain: TESTNET_TO_MAINNET[dst] };
+  }
+  return parsed;
 }
 
 /**
@@ -142,5 +185,37 @@ export function parseIntent(text: string): ParsedIntent | null {
     dstToken: dstToken!,
     srcChain: srcChain ?? "",
     dstChain: dstChain ?? srcChain ?? "",
+  };
+}
+
+// normalizeBackendIntent maps backend /intent/parse response into frontend ParsedIntent.
+export function normalizeBackendIntent(raw: ParsedIntentResponse): ParsedIntent {
+  const normalized: ParsedIntent = {
+    amount: (raw.amount ?? "").trim(),
+    srcToken: (raw.src_token ?? "").trim().toUpperCase(),
+    dstToken: ((raw.dst_token ?? "").trim() || (raw.src_token ?? "").trim()).toUpperCase(),
+    srcChain: (raw.src_chain ?? "").trim().toLowerCase(),
+    dstChain: (raw.dst_chain ?? "").trim().toLowerCase(),
+  };
+  return coerceNetworkFamily(normalized);
+}
+
+export function validateIntent(parsed: ParsedIntent): string[] {
+  const issues: string[] = [];
+  if (!parsed.amount) issues.push("Missing amount");
+  if (!parsed.srcToken) issues.push("Missing source token");
+  if (!parsed.dstToken) issues.push("Missing destination token");
+  if (!parsed.dstChain) issues.push("Missing destination chain");
+  return issues;
+}
+
+export function mergeParsedIntent(base: ParsedIntent | null, update: ParsedIntent): ParsedIntent {
+  if (!base) return update;
+  return {
+    amount: update.amount || base.amount,
+    srcToken: update.srcToken || base.srcToken,
+    dstToken: update.dstToken || base.dstToken,
+    srcChain: update.srcChain || base.srcChain,
+    dstChain: update.dstChain || base.dstChain,
   };
 }

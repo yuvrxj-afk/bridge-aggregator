@@ -388,7 +388,7 @@ export interface ParsedIntentResponse {
   dst_chain: string
 }
 
-// Parse a natural language intent via the backend OpenRouter integration.
+// Parse a natural language intent via backend LLM integration.
 export function fetchParseIntent(text: string): Promise<ParsedIntentResponse> {
   return apiFetch<ParsedIntentResponse>("/intent/parse", { text })
 }

@@ -36,12 +36,12 @@ type AcrossSwapTx struct {
 //     Returns SwapTx (ready-to-send calldata) + ApprovalTxns.
 //     Execution: approve token → send SwapTx to Across UniversalSwapAndBridge.
 type AcrossQuoteResponse struct {
-	CrossSwapType        string        `json:"crossSwapType"` // "bridgeable" | "anyToBridgeable"
-	ExpectedOutputAmount string        `json:"expectedOutputAmount"`
-	MinOutputAmount      string        `json:"minOutputAmount"`
-	ExpectedFillTime     int           `json:"expectedFillTime"`
-	InputAmount          string        `json:"inputAmount"`
-	IsAmountTooLow       bool          `json:"isAmountTooLow"`
+	CrossSwapType        string `json:"crossSwapType"` // "bridgeable" | "anyToBridgeable"
+	ExpectedOutputAmount string `json:"expectedOutputAmount"`
+	MinOutputAmount      string `json:"minOutputAmount"`
+	ExpectedFillTime     int    `json:"expectedFillTime"`
+	InputAmount          string `json:"inputAmount"`
+	IsAmountTooLow       bool   `json:"isAmountTooLow"`
 	Fees                 *struct {
 		Total *struct {
 			Amount string `json:"amount"`
@@ -61,19 +61,19 @@ type AcrossQuoteResponse struct {
 // AcrossDepositParams are the params for SpokePool.depositV3() returned by the Across API.
 // These map directly to the function signature on-chain.
 type AcrossDepositParams struct {
-	Depositor            string `json:"depositor"`
-	Recipient            string `json:"recipient"`
-	InputToken           string `json:"inputToken"`
-	OutputToken          string `json:"outputToken"`
-	InputAmount          string `json:"inputAmount"`
-	OutputAmount         string `json:"outputAmount"`
-	DestinationChainID   int64  `json:"destinationChainId"`
-	ExclusiveRelayer     string `json:"exclusiveRelayer"`
-	QuoteTimestamp       int64  `json:"quoteTimestamp"`
-	FillDeadline         int64  `json:"fillDeadline"`
-	ExclusivityDeadline  int64  `json:"exclusivityDeadline"`
-	Message              string `json:"message"`
-	SpokePoolAddress     string `json:"spokePoolAddress"`
+	Depositor           string `json:"depositor"`
+	Recipient           string `json:"recipient"`
+	InputToken          string `json:"inputToken"`
+	OutputToken         string `json:"outputToken"`
+	InputAmount         string `json:"inputAmount"`
+	OutputAmount        string `json:"outputAmount"`
+	DestinationChainID  int64  `json:"destinationChainId"`
+	ExclusiveRelayer    string `json:"exclusiveRelayer"`
+	QuoteTimestamp      int64  `json:"quoteTimestamp"`
+	FillDeadline        int64  `json:"fillDeadline"`
+	ExclusivityDeadline int64  `json:"exclusivityDeadline"`
+	Message             string `json:"message"`
+	SpokePoolAddress    string `json:"spokePoolAddress"`
 }
 
 // AcrossClient calls Across Swap API for quotes.
@@ -103,7 +103,7 @@ func NewAcrossClient(baseURL, apiKey, depositor string) *AcrossClient {
 
 // QuoteResult holds the parsed quote for our aggregator.
 type QuoteResult struct {
-	ExpectedOutputAmount string               // base units (smallest denomination of the output token)
+	ExpectedOutputAmount string // base units (smallest denomination of the output token)
 	ExpectedFillTimeSec  int64
 	TotalFeeAmount       string               // human-readable (fee in fee-token units, used for scoring)
 	InputAmount          string               // human-readable (echo)
@@ -120,6 +120,11 @@ func (c *AcrossClient) GetQuote(ctx context.Context, originChainID, destChainID 
 	if err != nil {
 		return nil, err
 	}
+	// Across API parameter validation is strict; normalize addresses to lowercase hex.
+	inputToken = strings.ToLower(strings.TrimSpace(inputToken))
+	outputToken = strings.ToLower(strings.TrimSpace(outputToken))
+	depositor = strings.ToLower(strings.TrimSpace(depositor))
+
 	q := u.Query()
 	q.Set("tradeType", "exactInput")
 	q.Set("amount", amountSmallestUnits)
@@ -200,8 +205,8 @@ type suggestedFeesResponse struct {
 	EstimatedFillTimeSec int    `json:"estimatedFillTimeSec"`
 	OutputAmount         string `json:"outputAmount"`
 	ExclusiveRelayer     string `json:"exclusiveRelayer"`
-	Timestamp            string `json:"timestamp"`       // decimal string, used as quoteTimestamp
-	FillDeadline         string `json:"fillDeadline"`    // decimal string
+	Timestamp            string `json:"timestamp"`    // decimal string, used as quoteTimestamp
+	FillDeadline         string `json:"fillDeadline"` // decimal string
 	ExclusivityDeadline  int64  `json:"exclusivityDeadline"`
 	SpokePoolAddress     string `json:"spokePoolAddress"`
 	IsAmountTooLow       bool   `json:"isAmountTooLow"`
@@ -220,6 +225,11 @@ func (c *AcrossClient) FetchDeposit(
 	if err != nil {
 		return nil, err
 	}
+	// Normalize addresses for strict API validation.
+	inputToken = strings.ToLower(strings.TrimSpace(inputToken))
+	outputToken = strings.ToLower(strings.TrimSpace(outputToken))
+	walletAddress = strings.ToLower(strings.TrimSpace(walletAddress))
+
 	q := u.Query()
 	q.Set("inputToken", inputToken)
 	q.Set("outputToken", outputToken)

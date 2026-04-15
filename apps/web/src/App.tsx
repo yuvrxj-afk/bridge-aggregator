@@ -12,7 +12,7 @@ import { IntentPanel } from "./components/IntentPanel";
 import { ExecutePage } from "./pages/ExecutePage";
 import { fetchOperations, type Route as BridgeRoute, type OperationDetail } from "./api";
 import { VISIBLE_PROVIDERS } from "./config/providers";
-import { type ParsedIntent } from "./lib/parseIntent";
+import { type IntentExecuteEventDetail, type ParsedIntent } from "./lib/parseIntent";
 
 type ChainScope = "mainnet" | "testnet";
 const CHAIN_SCOPE_STORAGE_KEY = "chain_scope";
@@ -37,7 +37,7 @@ function SwapPage() {
   const [error, setError] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<"best" | "cheapest" | "fastest">("best");
   const [quotedAt, setQuotedAt] = useState<number | null>(null);
-  const [pendingIntent, setPendingIntent] = useState<ParsedIntent | null>(null);
+  const [pendingIntent, setPendingIntent] = useState<{ parsed: ParsedIntent; autoQuote?: boolean; requestId?: number } | null>(null);
   const [safeOnly, setSafeOnly] = useState<boolean>(() => {
     try { return window.localStorage.getItem("safe_routes_only") === "true"; } catch { return false; }
   });
@@ -45,8 +45,21 @@ function SwapPage() {
   // Listen for intents dispatched by IntentPanel.
   useEffect(() => {
     const onIntent = (e: Event) => {
-      const parsed = (e as CustomEvent<ParsedIntent>).detail;
-      if (parsed) setPendingIntent(parsed);
+      const detail = (e as CustomEvent<IntentExecuteEventDetail | ParsedIntent>).detail;
+      if (!detail) return;
+      if ("parsed" in detail) {
+        setPendingIntent({
+          parsed: detail.parsed,
+          autoQuote: detail.autoQuote,
+          requestId: detail.requestId,
+        });
+        return;
+      }
+      setPendingIntent({
+        parsed: detail,
+        autoQuote: false,
+        requestId: Date.now(),
+      });
     };
     window.addEventListener("intent-execute", onIntent);
     return () => window.removeEventListener("intent-execute", onIntent);
@@ -121,7 +134,9 @@ function SwapPage() {
             onError={setError}
             onDirty={handleQuoteDirty}
             bestRoute={bestRoute}
-            intent={pendingIntent}
+            intent={pendingIntent?.parsed ?? null}
+            intentRequestId={pendingIntent?.requestId}
+            intentAutoQuote={pendingIntent?.autoQuote}
           />
         </div>
         {loading && (
@@ -488,9 +503,9 @@ function TerminalLayout({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!address || address === prevAddress.current) return;
     prevAddress.current = address;
-    setResumeDismissed(false);
     fetchOperations(address, 20, chainScope)
       .then(({ operations }) => {
+        setResumeDismissed(false);
         const pending = operations.filter(
           (op) =>
             op.status === "submitted" &&

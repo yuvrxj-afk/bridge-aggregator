@@ -18,6 +18,8 @@ interface Props {
   onDirty?: () => void;
   bestRoute: Route | null;
   intent?: ParsedIntent | null;
+  intentAutoQuote?: boolean;
+  intentRequestId?: number;
 }
 
 type ChainScope = "mainnet" | "testnet";
@@ -296,6 +298,8 @@ export function QuoteForm({
   onDirty,
   bestRoute,
   intent,
+  intentAutoQuote,
+  intentRequestId,
 }: Props) {
   const { address } = useAccount();
   const { publicKey: solanaPublicKey } = useWallet();
@@ -316,6 +320,11 @@ export function QuoteForm({
     return "mainnet";
   });
   const streamAbort = useRef<AbortController | null>(null);
+  const pendingAutoQuoteRef = useRef<number | null>(null);
+  const lastAutoQuoteRunRef = useRef<number | null>(null);
+  const availableChains = CHAINS.filter((c) =>
+    chainScope === "testnet" ? isTestnetChain(c.id) : !isTestnetChain(c.id),
+  );
 
   const srcIsNative = srcToken.address.toLowerCase() === ZERO_ADDRESS;
   const srcIsSolana = srcChain.id === SOLANA_CHAIN_ID;
@@ -331,35 +340,40 @@ export function QuoteForm({
     },
   });
 
-  // Apply parsed intent (from IntentInput) when it changes.
+  // Apply parsed intent from IntentPanel, preferring chains within current scope.
   useEffect(() => {
     if (!intent) return;
     if (intent.amount) setAmount(intent.amount);
 
-    const allChains = [...CHAINS];
+    const preferredChains = availableChains.length > 0 ? availableChains : CHAINS;
+    const pickChain = (name: string) =>
+      preferredChains.find(ch => ch.name === name) ?? CHAINS.find(ch => ch.name === name);
+    const pickToken = (chainId: number, symbol: string) => {
+      const tokens = TOKENS[chainId];
+      if (!tokens || tokens.length === 0) return null;
+      return tokens.find(tk => tk.symbol === symbol) ?? tokens[0];
+    };
+
     if (intent.srcChain) {
-      const c = allChains.find(ch => ch.name === intent.srcChain);
+      const c = pickChain(intent.srcChain);
       if (c) {
         setSrcChain(c);
-        const tokens = TOKENS[c.id];
-        if (tokens) {
-          const t = tokens.find(tk => tk.symbol === intent.srcToken) ?? tokens[0];
-          setSrcToken(t);
-        }
+        const t = pickToken(c.id, intent.srcToken);
+        if (t) setSrcToken(t);
       }
     }
     if (intent.dstChain) {
-      const c = allChains.find(ch => ch.name === intent.dstChain);
+      const c = pickChain(intent.dstChain);
       if (c) {
         setDstChain(c);
-        const tokens = TOKENS[c.id];
-        if (tokens) {
-          const t = tokens.find(tk => tk.symbol === intent.dstToken) ?? tokens[0];
-          setDstToken(t);
-        }
+        const t = pickToken(c.id, intent.dstToken);
+        if (t) setDstToken(t);
       }
     }
-  }, [intent]);
+    if (intentAutoQuote && intentRequestId) {
+      pendingAutoQuoteRef.current = intentRequestId;
+    }
+  }, [intent, intentAutoQuote, intentRequestId, availableChains]);
 
   useEffect(() => {
     onDirty?.();
@@ -376,25 +390,27 @@ export function QuoteForm({
     return () => window.removeEventListener("chain-scope-change", onScope);
   }, []);
 
-  const availableChains = CHAINS.filter((c) =>
-    chainScope === "testnet" ? isTestnetChain(c.id) : !isTestnetChain(c.id),
-  );
-
   useEffect(() => {
     if (availableChains.length === 0) return;
     if (!availableChains.some((c) => c.id === srcChain.id)) {
       const fallback = availableChains[0];
       setSrcChain(fallback);
       const nextTokens = getTokens(fallback.id);
-      if (nextTokens.length) setSrcToken(nextTokens[0]);
+      if (nextTokens.length) {
+        const preferred = nextTokens.find(t => t.symbol === srcToken.symbol) ?? nextTokens[0];
+        setSrcToken(preferred);
+      }
     }
     if (!availableChains.some((c) => c.id === dstChain.id)) {
       const fallback = availableChains[Math.min(1, availableChains.length - 1)];
       setDstChain(fallback);
       const nextTokens = getTokens(fallback.id);
-      if (nextTokens.length) setDstToken(nextTokens[0]);
+      if (nextTokens.length) {
+        const preferred = nextTokens.find(t => t.symbol === dstToken.symbol) ?? nextTokens[0];
+        setDstToken(preferred);
+      }
     }
-  }, [availableChains, srcChain.id, dstChain.id]);
+  }, [availableChains, srcChain.id, dstChain.id, srcToken.symbol, dstToken.symbol]);
 
   const setSrc = (chainId: number) => {
     const nextChain = CHAINS.find((c) => c.id === chainId);
@@ -527,6 +543,16 @@ export function QuoteForm({
     onLoading(true);
     let count = 0;
     try {
+      const metadata: Record<string, unknown> = {};
+      // Enable swap→bridge composition by telling the backend the *source-chain* address
+      // for the destination token symbol (e.g. dst=Base USDC, src-side USDC on Ethereum).
+      if (!srcIsSolana && !dstIsSolana && srcChain.id !== dstChain.id && srcToken.symbol !== dstToken.symbol) {
+        const dstOnSource = getTokens(srcChain.id).find((t) => t.symbol === dstToken.symbol);
+        if (dstOnSource?.address) {
+          metadata.source_swap_token_out_address = dstOnSource.address;
+          metadata.source_swap_token_out_decimals = dstOnSource.decimals;
+        }
+      }
       const quoteReq = {
         source: {
           chain: srcChain.name,
@@ -546,6 +572,7 @@ export function QuoteForm({
         },
         amount_base_units: amountBaseUnits,
         preferences: { max_slippage_bps: slippageBps },
+        ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
       };
       for await (const route of fetchQuoteStream(quoteReq, ctrl.signal)) {
         if (ctrl.signal.aborted) break;
@@ -576,6 +603,25 @@ export function QuoteForm({
     onError,
     slippageBps,
   ]);
+
+  useEffect(() => {
+    const reqId = pendingAutoQuoteRef.current;
+    if (!reqId) return;
+    if (lastAutoQuoteRunRef.current === reqId) return;
+    if (!intentAutoQuote) return;
+    if (loading) return;
+    if (!intent || !intent.amount || !intent.srcToken || !intent.dstToken || !intent.dstChain) return;
+    const intentApplied =
+      amount.trim() === intent.amount &&
+      srcToken.symbol === intent.srcToken &&
+      dstToken.symbol === intent.dstToken &&
+      (!intent.srcChain || srcChain.name === intent.srcChain) &&
+      dstChain.name === intent.dstChain;
+    if (!intentApplied) return;
+    lastAutoQuoteRunRef.current = reqId;
+    pendingAutoQuoteRef.current = null;
+    void submit();
+  }, [intentAutoQuote, intent, loading, submit, amount, srcToken.symbol, dstToken.symbol, srcChain.name, dstChain.name]);
 
   const walletReady = srcIsSolana ? !!solanaPublicKey : !!address;
   const canSubmit = walletReady && !loading && Number(amount || "0") > 0;

@@ -1,6 +1,14 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { parseIntent, type ParsedIntent } from "../lib/parseIntent";
+import { fetchParseIntent, BridgeError } from "../api";
+import {
+  mergeParsedIntent,
+  normalizeBackendIntent,
+  parseIntent,
+  validateIntent,
+  type IntentExecuteEventDetail,
+  type ParsedIntent,
+} from "../lib/parseIntent";
 
 interface IntentPanelProps {
   onClose: () => void;
@@ -47,6 +55,7 @@ export function IntentPanel({ onClose }: IntentPanelProps) {
   const [input, setValue] = useState("");
   const [parsing, setParsing] = useState(false);
   const [lastResult, setLastResult] = useState<ParsedIntent | null>(null);
+  const [draftIntent, setDraftIntent] = useState<ParsedIntent | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -76,40 +85,83 @@ export function IntentPanel({ onClose }: IntentPanelProps) {
     setParsing(true);
     addLog({ type: "parsing" });
 
-    // Short delay to show the parsing animation.
-    setTimeout(() => {
-      const parsed = parseIntent(text);
-      setParsing(false);
+    (async () => {
+      try {
+        const raw = await fetchParseIntent(text);
+        const parsed = normalizeBackendIntent(raw);
+        const merged = mergeParsedIntent(draftIntent, parsed);
+        const issues = validateIntent(merged);
 
-      if (!parsed) {
         setLogs(prev => {
-          // Replace the last "parsing" entry with an error.
           const idx = [...prev].reverse().findIndex(e => e.type === "parsing");
           if (idx < 0) return prev;
           const realIdx = prev.length - 1 - idx;
           const next = [...prev];
-          next[realIdx] = {
-            id: nextId(),
-            type: "error",
-            text: `Could not parse intent. Try: "Bridge 10 USDC from Ethereum to Base"`,
-          };
+          if (issues.length > 0) {
+            next[realIdx] = {
+              id: nextId(),
+              type: "error",
+              text: `${issues.join(" · ")}. Clarify the missing parts, for example: "to USDT on Polygon".`,
+            };
+            return next;
+          }
+          next[realIdx] = { id: nextId(), type: "result", parsed: merged };
           return next;
         });
-        return;
+        setDraftIntent(merged);
+        if (issues.length === 0) {
+          setLastResult(merged);
+        } else {
+          setLastResult(null);
+        }
+      } catch (err) {
+        // Defensive local fallback: keep intent UX working even if backend parsing
+        // fails (auth/network/provider outage).
+        const local = parseIntent(text);
+        if (local) {
+          const merged = mergeParsedIntent(draftIntent, local);
+          const issues = validateIntent(merged);
+          setLogs(prev => {
+            const idx = [...prev].reverse().findIndex(e => e.type === "parsing");
+            if (idx < 0) return prev;
+            const realIdx = prev.length - 1 - idx;
+            const next = [...prev];
+            if (issues.length > 0) {
+              next[realIdx] = {
+                id: nextId(),
+                type: "error",
+                text: `${issues.join(" · ")}. Clarify the missing parts, for example: "to USDT on Polygon".`,
+              };
+              return next;
+            }
+            next[realIdx] = { id: nextId(), type: "result", parsed: merged };
+            return next;
+          });
+          setDraftIntent(merged);
+          if (issues.length === 0) setLastResult(merged);
+        } else {
+          const msg =
+            err instanceof BridgeError
+              ? err.message
+              : "Intent parse failed. Please try again.";
+          setLogs(prev => {
+            const idx = [...prev].reverse().findIndex(e => e.type === "parsing");
+            if (idx < 0) return prev;
+            const realIdx = prev.length - 1 - idx;
+            const next = [...prev];
+            next[realIdx] = {
+              id: nextId(),
+              type: "error",
+              text: msg,
+            };
+            return next;
+          });
+        }
+      } finally {
+        setParsing(false);
       }
-
-      setLogs(prev => {
-        // Replace the last "parsing" entry with result.
-        const idx = [...prev].reverse().findIndex(e => e.type === "parsing");
-        if (idx < 0) return prev;
-        const realIdx = prev.length - 1 - idx;
-        const next = [...prev];
-        next[realIdx] = { id: nextId(), type: "result", parsed };
-        return next;
-      });
-      setLastResult(parsed);
-    }, 600);
-  }, [input, parsing, addLog]);
+    })();
+  }, [input, parsing, addLog, draftIntent]);
 
   const handleKey = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") submit();
@@ -117,9 +169,15 @@ export function IntentPanel({ onClose }: IntentPanelProps) {
 
   const executeIntent = useCallback(() => {
     if (!lastResult) return;
-    window.dispatchEvent(new CustomEvent("intent-execute", { detail: lastResult }));
+    const payload: IntentExecuteEventDetail = {
+      parsed: lastResult,
+      autoQuote: true,
+      requestId: Date.now(),
+    };
+    window.dispatchEvent(new CustomEvent("intent-execute", { detail: payload }));
     addLog({ type: "system", timestamp: nowTimestamp(), text: "Intent dispatched → pre-filling form..." });
     setLastResult(null);
+    setDraftIntent(null);
   }, [lastResult, addLog]);
 
   return (
@@ -338,8 +396,7 @@ function LogItem({
 
               <span className="uppercase" style={{ color: "#5d5f5f" }}>TO</span>
               <span className="text-right" style={{ color: "#e5e2e1" }}>
-                {parsed.dstToken !== parsed.srcToken ? `${parsed.dstToken} · ` : ""}
-                {parsed.dstChain ? chainLabel(parsed.dstChain) : "—"}
+                {parsed.dstToken || "—"}{parsed.dstChain ? ` · ${chainLabel(parsed.dstChain)}` : ""}
               </span>
             </div>
           </div>

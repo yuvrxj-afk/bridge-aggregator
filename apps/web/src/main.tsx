@@ -34,10 +34,7 @@ import { getDefaultConfig, RainbowKitProvider } from "@rainbow-me/rainbowkit";
 import { WagmiProvider, http, fallback } from "wagmi";
 import { mainnet, polygon, optimism, arbitrum, base, sepolia, baseSepolia, arbitrumSepolia, optimismSepolia } from "wagmi/chains";
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
-import { ConnectionProvider, WalletProvider } from "@solana/wallet-adapter-react";
-import { WalletModalProvider } from "@solana/wallet-adapter-react-ui";
-import { PhantomWalletAdapter, SolflareWalletAdapter } from "@solana/wallet-adapter-wallets";
-import { useMemo } from "react";
+import { SolanaProviders } from "./components/SolanaProviders";
 
 const appName = import.meta.env.VITE_APP_NAME || "TERMINAL.AGG";
 const walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || "YOUR_PROJECT_ID";
@@ -77,26 +74,12 @@ const config = getDefaultConfig({
 });
 const queryClient = new QueryClient();
 
-function SolanaProviders({ children }: { children: React.ReactNode }) {
-  const wallets = useMemo(
-    () => [new PhantomWalletAdapter(), new SolflareWalletAdapter()],
-    [],
-  );
-  return (
-    <ConnectionProvider endpoint={solanaRpc}>
-      <WalletProvider wallets={wallets} autoConnect>
-        <WalletModalProvider>{children}</WalletModalProvider>
-      </WalletProvider>
-    </ConnectionProvider>
-  );
-}
-
 createRoot(document.getElementById("root")!).render(
   <ErrorBoundary>
     <WagmiProvider config={config}>
       <QueryClientProvider client={queryClient}>
         <RainbowKitProvider>
-          <SolanaProviders>
+          <SolanaProviders endpoint={solanaRpc}>
             <BrowserRouter>
               <App />
             </BrowserRouter>

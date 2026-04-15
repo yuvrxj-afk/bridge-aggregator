@@ -256,6 +256,7 @@ func bridgeProbeRequest(id, network string) models.QuoteRequest {
 					Asset:         "USDC",
 					TokenAddress:  "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
 					TokenDecimals: 6,
+					Address:       "0x1111111111111111111111111111111111111111",
 				},
 				Destination: models.Endpoint{
 					ChainID:       421614,
@@ -274,6 +275,7 @@ func bridgeProbeRequest(id, network string) models.QuoteRequest {
 				Asset:         "USDC",
 				TokenAddress:  "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
 				TokenDecimals: 6,
+				Address:       "0x1111111111111111111111111111111111111111",
 			},
 			Destination: models.Endpoint{
 				ChainID:       8453,
@@ -930,10 +932,10 @@ func CCTPAttestationStreamHandler(attestationURL string) gin.HandlerFunc {
 	}
 }
 
-// IntentParseHandler parses a natural language intent string using OpenRouter.
+// IntentParseHandler parses a natural language intent string using configured LLM providers.
 // POST /api/v1/intent/parse — body: {"text":"bridge 10 USDC from Ethereum to Base"}
 // Returns: {"amount":"10","src_token":"USDC","dst_token":"USDC","src_chain":"ethereum","dst_chain":"base"}
-func IntentParseHandler(openRouterKey string) gin.HandlerFunc {
+func IntentParseHandler(intentCfg intent.ProviderConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req struct {
 			Text string `json:"text"`
@@ -944,8 +946,12 @@ func IntentParseHandler(openRouterKey string) gin.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer cancel()
-		result, err := intent.Parse(ctx, openRouterKey, req.Text)
+		result, err := intent.Parse(ctx, intentCfg, req.Text)
 		if err != nil {
+			if strings.Contains(err.Error(), "intent provider not configured") {
+				RespondError(c, http.StatusServiceUnavailable, "INTENT_PROVIDER_DISABLED", "Intent parsing is not enabled on this server.", nil)
+				return
+			}
 			RespondError(c, http.StatusUnprocessableEntity, "INTENT_PARSE_FAILED", err.Error(), nil)
 			return
 		}

@@ -1,7 +1,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 
 // Bridge-specific status page URLs
-function bridgeStatusUrl(bridgeId: string, txHash: string, _srcChainId?: number): string | null {
+function bridgeStatusUrl(bridgeId: string, txHash: string): string | null {
   if (bridgeId === "across") {
     return `https://app.across.to/transactions/${txHash}`;
   }
@@ -51,12 +51,11 @@ export function TransactionSuccessModal({
   dstAsset,
   estimatedTimeSec,
   bridgeId,
-  srcChainId,
   onViewOps,
   onDone,
 }: TransactionSuccessModalProps) {
   const arrivalTime = arrivalTimeLabel(estimatedTimeSec);
-  const statusUrl = bridgeId ? bridgeStatusUrl(bridgeId, txHash, srcChainId) : null;
+  const statusUrl = bridgeId ? bridgeStatusUrl(bridgeId, txHash) : null;
   return (
     <AnimatePresence>
       {open && (

@@ -14,6 +14,7 @@ import (
 	"bridge-aggregator/internal/bridges"
 	"bridge-aggregator/internal/config"
 	"bridge-aggregator/internal/dex"
+	"bridge-aggregator/internal/intent"
 	"bridge-aggregator/internal/middleware"
 	"bridge-aggregator/internal/service"
 	"bridge-aggregator/internal/store"
@@ -166,7 +167,11 @@ func main() {
 		v1.POST("/route/buildTransaction", api.BuildTransactionHandler(adapters))
 		v1.GET("/cctp/attestation/:messageHash", api.CCTPAttestationHandler(cfg.CCTPAttestationURL))
 		v1.GET("/cctp/attestation/stream/:messageHash", api.CCTPAttestationStreamHandler(cfg.CCTPAttestationURL))
-		v1.POST("/intent/parse", intentRL.Limit(), apiKeyMW, api.IntentParseHandler(cfg.OpenRouterKey))
+		v1.POST("/intent/parse", intentRL.Limit(), apiKeyMW, api.IntentParseHandler(intent.ProviderConfig{
+			GeminiAPIKey:  cfg.GeminiAPIKey,
+			GeminiModel:   cfg.GeminiModel,
+			OpenRouterKey: cfg.OpenRouterKey,
+		}))
 	}
 
 	addr := ":" + cfg.Port
