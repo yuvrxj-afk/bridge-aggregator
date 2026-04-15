@@ -284,7 +284,7 @@ SELECT id, route, status, COALESCE(network,'mainnet'),
        created_at, updated_at
 FROM operations
 WHERE network = $2
-  AND wallet_address = lower($3)
+  AND COALESCE(wallet_address, lower(route->'source'->>'address')) = lower($3)
 ORDER BY created_at DESC
 LIMIT $1;
 `
@@ -295,7 +295,7 @@ SELECT id, route, status, COALESCE(network,'mainnet'),
        COALESCE(client_reference_id,''), COALESCE(idempotency_key,''), COALESCE(tx_hash,''),
        created_at, updated_at
 FROM operations
-WHERE wallet_address = lower($2)
+WHERE COALESCE(wallet_address, lower(route->'source'->>'address')) = lower($2)
 ORDER BY created_at DESC
 LIMIT $1;
 `
