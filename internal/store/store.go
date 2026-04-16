@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -84,12 +85,25 @@ func (s *Store) initSchema() error {
 	//
 	// Use a global advisory lock to serialize schema init/migrations.
 	const lockID int64 = 771337001 // stable constant; unique within this app
-	if _, err := s.DB.Exec(`SELECT pg_advisory_lock($1);`, lockID); err != nil {
+	// IMPORTANT: advisory locks are *connection-scoped*. Using s.DB.Exec() can hop
+	// across pooled connections between calls, so we must pin to a single Conn.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	conn, err := s.DB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("store: acquire db conn for schema init: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, `SET lock_timeout = '15s';`); err != nil {
+		return fmt.Errorf("store: set lock_timeout: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1);`, lockID); err != nil {
 		return fmt.Errorf("store: acquire schema lock: %w", err)
 	}
 	defer func() {
 		// Best-effort unlock; ignore errors because initSchema will return primary error.
-		_, _ = s.DB.Exec(`SELECT pg_advisory_unlock($1);`, lockID)
+		_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1);`, lockID)
 	}()
 
 	const ddl = `
@@ -129,8 +143,10 @@ ALTER TABLE operations ADD COLUMN IF NOT EXISTS wallet_address TEXT;
 CREATE INDEX IF NOT EXISTS operations_network_idx ON operations(network, created_at DESC);
 CREATE INDEX IF NOT EXISTS operations_wallet_idx ON operations(wallet_address, created_at DESC);
 `
-	_, err := s.DB.Exec(ddl)
-	return err
+	if _, err := conn.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("store: init schema: %w", err)
+	}
+	return nil
 }
 
 // CreateOperation inserts a new operation, enforcing idempotency if key is non-empty.
@@ -198,7 +214,9 @@ WHERE id = $1;
 // GetOperation fetches an operation by ID.
 func (s *Store) GetOperation(id string) (*Operation, error) {
 	const q = `
-SELECT id, route, status, client_reference_id, idempotency_key, tx_hash, created_at, updated_at
+SELECT id, route, status,
+       COALESCE(client_reference_id,''), COALESCE(idempotency_key,''), COALESCE(tx_hash,''),
+       created_at, updated_at
 FROM operations
 WHERE id = $1;
 `
@@ -233,7 +251,9 @@ func (s *Store) GetOperationByIdempotencyKey(key string) (*Operation, error) {
 		return nil, nil
 	}
 	const q = `
-SELECT id, route, status, client_reference_id, idempotency_key, tx_hash, created_at, updated_at
+SELECT id, route, status,
+       COALESCE(client_reference_id,''), COALESCE(idempotency_key,''), COALESCE(tx_hash,''),
+       created_at, updated_at
 FROM operations
 WHERE idempotency_key = $1
 LIMIT 1;

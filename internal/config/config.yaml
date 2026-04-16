@@ -21,6 +21,8 @@ oneinch_swapper: ""
 gemini_api_key: ""
 gemini_model: "gemini-2.0-flash"
 openrouter_key: ""
+anthropic_api_key: ""
+anthropic_model: "claude-haiku-4-5-20251001"
 
 # Static API key for mutating endpoints (POST /execute, PATCH /operations/:id/status).
 # Set via API_KEY env var in production. Frontend must send as X-API-Key header (VITE_API_KEY).

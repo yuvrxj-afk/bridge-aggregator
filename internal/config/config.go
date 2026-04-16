@@ -54,6 +54,8 @@ type Config struct {
 	OpenRouterKey string // OpenRouter API key for intent parsing (optional)
 	GeminiAPIKey  string // Gemini API key for intent parsing (optional; preferred when set)
 	GeminiModel   string // Gemini model name, e.g. "gemini-2.0-flash"
+	AnthropicAPIKey string // Anthropic API key for intent parsing (optional; preferred when set)
+	AnthropicModel  string // Anthropic model id, e.g. "claude-haiku-4-5-20251001"
 
 	// APIKey is a static shared secret for mutating API endpoints (/execute, PATCH /operations/:id/status).
 	// Set via API_KEY env var. If empty, mutating endpoints are unprotected — do not run in production without this.
@@ -99,6 +101,8 @@ func Load() (*Config, error) {
 	viper.SetDefault("openrouter_key", "")
 	viper.SetDefault("gemini_api_key", "")
 	viper.SetDefault("gemini_model", "gemini-2.0-flash")
+	viper.SetDefault("anthropic_api_key", "")
+	viper.SetDefault("anthropic_model", "claude-haiku-4-5-20251001")
 	viper.SetDefault("api_key", "")
 	viper.AutomaticEnv()
 
@@ -140,6 +144,8 @@ func Load() (*Config, error) {
 		OpenRouterKey:        viper.GetString("openrouter_key"),
 		GeminiAPIKey:         viper.GetString("gemini_api_key"),
 		GeminiModel:          viper.GetString("gemini_model"),
+		AnthropicAPIKey:      viper.GetString("anthropic_api_key"),
+		AnthropicModel:       viper.GetString("anthropic_model"),
 		APIKey:               viper.GetString("api_key"),
 	}
 

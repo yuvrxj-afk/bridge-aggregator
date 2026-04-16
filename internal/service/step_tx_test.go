@@ -438,6 +438,23 @@ func TestPopulateStepTransaction_CanonicalBase_ETH(t *testing.T) {
 	}
 }
 
+func TestPopulateStepTransaction_CanonicalBase_ETH_RejectsAssetMismatch(t *testing.T) {
+	h := canonicalBaseETHHop()
+	// Simulate the observed unit-mixup class: hop says USDC but provider_data says native ETH.
+	h.FromAsset = "USDC"
+	h.AmountInBaseUnits = "7240323" // 7.240323 USDC base units (6 decimals), not wei.
+	route := makeRoute(h)
+	_, err := service.PopulateStepTransaction(context.Background(), nil, nil, models.StepTransactionRequest{
+		Route: route, HopIndex: 0,
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "from_asset") {
+		t.Fatalf("expected from_asset mismatch error, got: %v", err)
+	}
+}
+
 // ── 0x swap step transaction ──────────────────────────────────────────────────
 
 func TestPopulateStepTransaction_ZeroEx(t *testing.T) {

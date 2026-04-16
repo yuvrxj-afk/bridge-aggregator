@@ -20,6 +20,7 @@ import {
   patchOperationStatus,
 } from "../api";
 import { savePendingClaim } from "../lib/pendingClaims";
+import { explorerTxUrl } from "../lib/explorer";
 import { fetchCCTPContracts } from "../api";
 import { TokenIcon } from "./TokenIcon";
 import { ChainIcon } from "./ChainIcon";
@@ -38,19 +39,8 @@ const CHAIN_ID: Record<string, number> = {
   sepolia: 11155111, "base-sepolia": 84532,
   "arbitrum-sepolia": 421614, "op-sepolia": 11155420,
 };
-const EXPLORER: Record<number, string> = {
-  1: "https://etherscan.io", 8453: "https://basescan.org",
-  42161: "https://arbiscan.io", 10: "https://optimistic.etherscan.io",
-  137: "https://polygonscan.com", 43114: "https://snowtrace.io",
-  56: "https://bscscan.com", 900: "https://explorer.solana.com",
-  // testnets
-  11155111: "https://sepolia.etherscan.io",
-  84532:    "https://sepolia.basescan.org",
-  421614:   "https://sepolia.arbiscan.io",
-  11155420: "https://sepolia-optimism.etherscan.io",
-};
 function explorerTx(chainId: number, hash: string) {
-  return `${EXPLORER[chainId] ?? "https://etherscan.io"}/tx/${hash}`;
+  return explorerTxUrl(chainId, hash);
 }
 function tokenDecimals(chainId: number, symbol: string) {
   return TOKENS[chainId]?.find(t => t.symbol === symbol)?.decimals ?? 18;
@@ -601,16 +591,11 @@ export function ExecutePanel({
         .then(notifyDashboard)
         .catch(() => undefined);
     } else if (phase === "done" && txHash) {
-      // All hops complete. Try "completed" first (valid if already "submitted").
-      // Fall back to "submitted" if still in "pending" (single-hop route that never
-      // set bridge_submitted).
+      // Server allows pending→completed with tx_hash (single PATCH). If already submitted
+      // (e.g. after bridge_submitted), submitted→completed applies.
       patchOperationStatus(operationId, "completed", txHash)
         .then(notifyDashboard)
-        .catch(() =>
-          patchOperationStatus(operationId, "submitted", txHash)
-            .then(notifyDashboard)
-            .catch(() => undefined),
-        );
+        .catch(() => undefined);
     } else if (phase === "error_terminal" || phase === "error_requote") {
       patchOperationStatus(operationId, "failed")
         .then(notifyDashboard)
@@ -750,6 +735,11 @@ export function ExecutePanel({
         const diamond = resp.diamond as `0x${string}`;
         const chainId = resp.chain_id || undefined;
 
+        // Ensure reads/writes target the correct source chain.
+        if (chainId && currentChainId !== chainId) {
+          await switchChainAsync({ chainId });
+        }
+
         if (!isNative && minAmount > 0n) {
           const allowance = await publicClient!.readContract({
             address: asAddr(sendingAsset),
@@ -784,6 +774,10 @@ export function ExecutePanel({
         setPhase("preparing");
         for (let hopIdx = 0; hopIdx < route.hops.length; hopIdx += 1) {
           const hop = route.hops[hopIdx];
+          const hopChainId = chainIdOf(hop.from_chain) || undefined;
+          if (hopChainId && currentChainId !== hopChainId) {
+            await switchChainAsync({ chainId: hopChainId });
+          }
           const data = await fetchStepTransaction(route, hopIdx, walletAddress, walletAddress);
 
           // ── Solana-signed hop (Mayan from Solana) ──
@@ -822,12 +816,20 @@ export function ExecutePanel({
 
           const allSteps = data.bridge_params?.steps ?? [];
           if (allSteps.length === 0) throw new Error(`No execution steps returned for hop ${hopIdx + 1}`);
-          const hopChainId = chainIdOf(hop.from_chain) || undefined;
           const isCCTP = data.bridge_params?.protocol === "circle_cctp";
           for (const step of allSteps) {
             if (step.step_type === "approve") {
               const info = resolveApprovalInfo(step);
               if (info) {
+                // Native coin / invalid approval targets should never be checked via ERC-20 allowance.
+                if (!info.token || info.token.toLowerCase() === ZERO_ADDRESS) {
+                  continue;
+                }
+                // Ensure allowance reads happen on the hop's chain.
+                const apprChainId = info.chainId || hopChainId;
+                if (apprChainId && currentChainId !== apprChainId) {
+                  await switchChainAsync({ chainId: apprChainId });
+                }
                 const onChain = await publicClient!.readContract({
                   address: asAddr(info.token),
                   abi: ERC20_ALLOWANCE_ABI,
@@ -1138,7 +1140,8 @@ export function ExecutePanel({
       dstAsset={dstHop.to_asset}
       estimatedTimeSec={route.estimated_time_seconds}
       bridgeId={primaryBridgeId}
-      srcChainId={srcChainId}
+      dstChainId={dstChainId}
+      recipientAddress={walletAddress ?? undefined}
       onViewOps={() => { setShowSuccessModal(false); navigate("/operations"); }}
       onDone={() => { setShowSuccessModal(false); navigate("/app"); }}
     />

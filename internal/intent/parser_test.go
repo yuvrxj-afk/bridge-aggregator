@@ -28,6 +28,9 @@ func TestParse_RejectsEmptyProviderConfig(t *testing.T) {
 	if got.Amount != "10" || got.SrcToken != "USDC" || got.DstChain == "" {
 		t.Fatalf("unexpected heuristic parse output: %+v", got)
 	}
+	if got.Network != "mainnet" {
+		t.Fatalf("expected mainnet network, got %+v", got)
+	}
 }
 
 func TestParse_RejectsEmptyText(t *testing.T) {
@@ -97,6 +100,26 @@ func TestParseWithClient_GeminiHappyPath(t *testing.T) {
 	}
 }
 
+func TestParseWithClient_AnthropicHappyPath(t *testing.T) {
+	body := `{"content":[{"type":"text","text":"{\"amount\":\"10\",\"src_token\":\"USDC\",\"dst_token\":\"USDC\",\"src_chain\":\"ethereum\",\"dst_chain\":\"base\"}"}]}`
+	client := mockClient{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+		},
+	}
+	got, err := parseWithClient(context.Background(), client, ProviderConfig{
+		AnthropicAPIKey: "a",
+		AnthropicModel:  "claude-haiku-4-5-20251001",
+	}, "bridge 10 usdc from eth to base")
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if got.Amount != "10" || got.SrcToken != "USDC" || got.DstChain != "base" {
+		t.Fatalf("unexpected result: %+v", got)
+	}
+}
+
 func TestParseHeuristic_HandlesQuestionSuffix(t *testing.T) {
 	got := parseHeuristic("I want to bridge 10 USDC from base sepolia to sepolia, what routes I can have?")
 	if got.Amount != "10" {
@@ -107,5 +130,9 @@ func TestParseHeuristic_HandlesQuestionSuffix(t *testing.T) {
 	}
 	if got.SrcChain != "base-sepolia" || got.DstChain != "sepolia" {
 		t.Fatalf("expected base-sepolia -> sepolia, got %+v", got)
+	}
+	got.Network = deriveNetwork(got.SrcChain, got.DstChain)
+	if got.Network != "testnet" {
+		t.Fatalf("expected testnet network, got %+v", got)
 	}
 }

@@ -771,11 +771,13 @@ func quoteSwapOnly(ctx context.Context, dexAdapter dex.Adapter, req models.Quote
 	if req.Preferences != nil {
 		swapSlippage = req.Preferences.MaxSlippageBps
 	}
+	tokenIn := normalizeDexTokenAddress(req.Source.ChainID, req.Source.TokenAddress)
+	tokenOut := normalizeDexTokenAddress(req.Destination.ChainID, req.Destination.TokenAddress)
 	dq, err := dexAdapter.GetQuote(ctx, dex.QuoteRequest{
 		TokenInChainID:  req.Source.ChainID,
 		TokenOutChainID: req.Destination.ChainID,
-		TokenIn:         req.Source.TokenAddress,
-		TokenOut:        req.Destination.TokenAddress,
+		TokenIn:         tokenIn,
+		TokenOut:        tokenOut,
 		Amount:          amountIn,
 		Swapper:         req.Source.Address,
 		MaxSlippageBps:  swapSlippage,
@@ -796,8 +798,8 @@ func quoteSwapOnly(ctx context.Context, dexAdapter dex.Adapter, req models.Quote
 				ToChain:            req.Source.Chain,
 				FromAsset:          req.Source.Asset,
 				ToAsset:            req.Destination.Asset,
-				FromTokenAddress:   req.Source.TokenAddress,
-				ToTokenAddress:     req.Destination.TokenAddress,
+				FromTokenAddress:   tokenIn,
+				ToTokenAddress:     tokenOut,
 				AmountInBaseUnits:  amountIn,
 				AmountOutBaseUnits: dq.EstimatedOutputAmount,
 				ProviderData:       buildSwapProviderData(dq),
@@ -918,11 +920,13 @@ func quoteSwapThenBridge(ctx context.Context, adapters []bridges.Adapter, dexAda
 	if req.Preferences != nil {
 		stbSlippage = req.Preferences.MaxSlippageBps
 	}
+	tokenIn := normalizeDexTokenAddress(req.Source.ChainID, req.Source.TokenAddress)
+	tokenOut := normalizeDexTokenAddress(req.Source.ChainID, rawOutAddr)
 	dq, err := dexAdapter.GetQuote(ctx, dex.QuoteRequest{
 		TokenInChainID:  req.Source.ChainID,
 		TokenOutChainID: req.Source.ChainID,
-		TokenIn:         req.Source.TokenAddress,
-		TokenOut:        rawOutAddr,
+		TokenIn:         tokenIn,
+		TokenOut:        tokenOut,
 		Amount:          amountIn,
 		Swapper:         req.Source.Address,
 		MaxSlippageBps:  stbSlippage,
@@ -937,7 +941,16 @@ func quoteSwapThenBridge(ctx context.Context, adapters []bridges.Adapter, dexAda
 	brReq := req
 	brReq.Source.Asset = req.Destination.Asset
 	brReq.AmountBaseUnits = dq.EstimatedOutputAmount
-	brRoutes, berr := Quote(ctx, adapters, brReq)
+	// Exclude canonical bridges from swap→bridge compositions:
+	// - Canonical bridges only move the same token (no cross-token bridging)
+	// - They have long finality and are not suitable as the bridge leg after a swap
+	var composableAdapters []bridges.Adapter
+	for _, a := range adapters {
+		if !strings.HasPrefix(a.ID(), "canonical_") {
+			composableAdapters = append(composableAdapters, a)
+		}
+	}
+	brRoutes, berr := Quote(ctx, composableAdapters, brReq)
 	if berr != nil {
 		return nil, berr
 	}
@@ -962,8 +975,8 @@ func quoteSwapThenBridge(ctx context.Context, adapters []bridges.Adapter, dexAda
 					ToChain:            req.Source.Chain,
 					FromAsset:          req.Source.Asset,
 					ToAsset:            req.Destination.Asset,
-					FromTokenAddress:   req.Source.TokenAddress,
-					ToTokenAddress:     rawOutAddr,
+					FromTokenAddress:   tokenIn,
+					ToTokenAddress:     tokenOut,
 					AmountInBaseUnits:  amountIn,
 					AmountOutBaseUnits: dq.EstimatedOutputAmount,
 					ProviderData:       buildSwapProviderData(dq),
@@ -1009,6 +1022,12 @@ func quoteSwapBridgeSwap(ctx context.Context, adapters []bridges.Adapter, dexAda
 
 	for _, da := range dexAdapters {
 		for _, ba := range adapters {
+			// Canonical bridges are not valid bridge legs for swap→bridge→swap.
+			// They only move the same token and can produce contradictory provider_data
+			// when asked to bridge an intermediate like USDC.
+			if strings.HasPrefix(ba.ID(), "canonical_") {
+				continue
+			}
 			// Skip bridges that handle arbitrary tokens natively — their GetQuote already
 			// does swap+bridge+swap internally, so a 3-hop composition would duplicate them.
 			switch ba.ID() {
@@ -1045,10 +1064,11 @@ func quoteSwapBridgeSwap(ctx context.Context, adapters []bridges.Adapter, dexAda
 				if req.Preferences != nil {
 					compSlippage = req.Preferences.MaxSlippageBps
 				}
+				tokenIn := normalizeDexTokenAddress(req.Source.ChainID, req.Source.TokenAddress)
 				step1, err := da.GetQuote(ctx, dex.QuoteRequest{
 					TokenInChainID:  req.Source.ChainID,
 					TokenOutChainID: req.Source.ChainID,
-					TokenIn:         req.Source.TokenAddress,
+					TokenIn:         tokenIn,
 					TokenOut:        srcInterim.Address,
 					Amount:          amountIn,
 					Swapper:         req.Source.Address,
@@ -1221,6 +1241,20 @@ func hopIsExecutable(h models.Hop) bool {
 	default:
 		return false
 	}
+}
+
+func normalizeDexTokenAddress(chainID int, tokenAddress string) string {
+	addr := strings.TrimSpace(tokenAddress)
+	if addr == "" {
+		return addr
+	}
+	if strings.EqualFold(addr, "0x0000000000000000000000000000000000000000") ||
+		strings.EqualFold(addr, "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE") {
+		if info, ok := bridges.TokenByChainAndSymbol[bridges.ChainID(chainID)]["WETH"]; ok && info.Address != "" {
+			return info.Address
+		}
+	}
+	return addr
 }
 
 // QuoteWithDEX wraps Quote and, when no bridge routes are available, falls back to a

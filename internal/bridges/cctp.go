@@ -132,6 +132,11 @@ func (c CCTPAdapter) GetQuote(ctx context.Context, req models.QuoteRequest) (*mo
 	if dst.Symbol != "" && !strings.EqualFold(dst.Symbol, "USDC") {
 		return nil, fmt.Errorf("cctp: only USDC supported (destination.asset=%s)", dst.Symbol)
 	}
+	// Even for address-first callers, ensure we never build a CCTP route with a zero burn token.
+	if strings.TrimSpace(src.Token.Address) == "" ||
+		strings.EqualFold(src.Token.Address, "0x0000000000000000000000000000000000000000") {
+		return nil, fmt.Errorf("cctp: invalid burn token address for source chain %d", src.ChainID)
+	}
 
 	amountSmallest, err := resolveAmountBaseUnits(req, src.Token.Decimals)
 	if err != nil {

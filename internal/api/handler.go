@@ -126,16 +126,22 @@ func StreamQuoteHandler(adapters []bridges.Adapter, dexAdapters []dex.Adapter) g
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
 		c.Header("X-Accel-Buffering", "no")
-		c.Header("Access-Control-Allow-Origin", "*")
+		// Do not override CORS here; global CORS middleware controls allowed origins.
 
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer cancel()
 
 		var mu sync.Mutex
 		var sent int
+		expiresAt := time.Now().Add(90 * time.Second).UTC().Format(time.RFC3339)
 
 		req = service.EnrichQuoteRequest(req)
 		router.QuoteStream(ctx, adapters, dexAdapters, req, func(route models.Route) {
+			// Keep streamed routes executable: /execute requires quote_expires_at.
+			// Non-streaming /quote sets this in service.Quote(); stream must do it here.
+			if strings.TrimSpace(route.QuoteExpiresAt) == "" {
+				route.QuoteExpiresAt = expiresAt
+			}
 			data, err := json.Marshal(route)
 			if err != nil {
 				return

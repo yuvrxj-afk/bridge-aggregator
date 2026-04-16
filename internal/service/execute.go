@@ -153,7 +153,12 @@ func UpdateOperationStatus(ctx context.Context, s *store.Store, id string, req m
 	if req.Status == models.OperationStatusSubmitted && req.TxHash == "" {
 		return ErrTxHashRequired
 	}
-	if !isValidTransition(op.Status, req.Status) {
+	// Terminal success from initial state: one PATCH is enough for single-hop flows
+	// (avoids relying on pending→submitted→completed surviving two round trips).
+	if req.Status == models.OperationStatusCompleted && op.Status == models.OperationStatusPending && strings.TrimSpace(req.TxHash) == "" {
+		return ErrTxHashRequired
+	}
+	if !isValidTransition(op.Status, req.Status, strings.TrimSpace(req.TxHash)) {
 		return ErrInvalidTransition
 	}
 	if err := s.UpdateOperationStatus(id, req.Status, req.TxHash); err != nil {
@@ -191,9 +196,13 @@ func GetOperationEvents(ctx context.Context, s *store.Store, id string, limit in
 	return out, nil
 }
 
-func isValidTransition(from, to string) bool {
+// txHash is required when allowing pending→completed (see UpdateOperationStatus).
+func isValidTransition(from, to, txHash string) bool {
 	switch from {
 	case models.OperationStatusPending:
+		if to == models.OperationStatusCompleted {
+			return txHash != ""
+		}
 		return to == models.OperationStatusSubmitted || to == models.OperationStatusFailed
 	case models.OperationStatusSubmitted:
 		return to == models.OperationStatusCompleted || to == models.OperationStatusFailed
@@ -224,7 +233,7 @@ func recoveryHints(status, txHash string) []string {
 	case models.OperationStatusPending:
 		return []string{
 			"Use /api/v1/route/buildTransaction or /api/v1/route/stepTransaction to get executable tx data.",
-			"After wallet submission, PATCH status to submitted with tx_hash.",
+			"After wallet submission, PATCH status to submitted with tx_hash, or PATCH completed with tx_hash when the full flow is done.",
 		}
 	case models.OperationStatusSubmitted:
 		hints := []string{

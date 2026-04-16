@@ -14,7 +14,7 @@ export interface Chain {
 export const MAINNET_CHAIN_IDS = [1, 8453, 42161, 10, 137, 43114, 56, 900] as const;
 export const TESTNET_CHAIN_IDS = [11155111, 84532, 421614, 11155420] as const;
 
-export const CHAINS: Chain[] = [
+export const MAINNET_CHAINS: Chain[] = [
   { id: 1,     name: "ethereum", label: "Ethereum", logoColor: "#627EEA" },
   { id: 8453,  name: "base",     label: "Base",     logoColor: "#0052FF" },
   { id: 42161, name: "arbitrum", label: "Arbitrum", logoColor: "#28A0F0" },
@@ -25,12 +25,14 @@ export const CHAINS: Chain[] = [
   { id: 900,   name: "solana",    label: "Solana",    logoColor: "#9945FF" },
 ];
 
+export const CHAINS: Chain[] = [...MAINNET_CHAINS];
+
 // Sentinel chain ID for Solana (not a real EVM chain ID).
 export const SOLANA_CHAIN_ID = 900;
 
 const NATIVE = "0x0000000000000000000000000000000000000000";
 
-export const TOKENS: Record<number, Token[]> = {
+export const MAINNET_TOKENS: Record<number, Token[]> = {
   1: [
     { symbol: "ETH",  address: NATIVE,                                       decimals: 18 },
     { symbol: "USDC", address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", decimals: 6  },
@@ -84,7 +86,7 @@ export const TOKENS: Record<number, Token[]> = {
 // ── Testnet chains and tokens ─────────────────────────────────────────────────
 // Only activated when VITE_NETWORK=testnet. Additive — does NOT replace mainnet entries.
 
-const TESTNET_CHAINS: Chain[] = [
+export const TESTNET_CHAINS: Chain[] = [
   { id: 11155111, name: "sepolia",          label: "Sepolia",          logoColor: "#627EEA" },
   { id: 84532,    name: "base-sepolia",     label: "Base Sepolia",     logoColor: "#0052FF" },
   { id: 421614,   name: "arbitrum-sepolia", label: "Arbitrum Sepolia", logoColor: "#28A0F0" },
@@ -92,7 +94,7 @@ const TESTNET_CHAINS: Chain[] = [
 ];
 
 // Testnet USDC addresses — sourced from Circle's sandbox deployment.
-const TESTNET_TOKENS: Record<number, Token[]> = {
+export const TESTNET_TOKENS: Record<number, Token[]> = {
   11155111: [
     { symbol: "ETH",  address: NATIVE,                                       decimals: 18 },
     { symbol: "WETH", address: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14", decimals: 18 },
@@ -118,13 +120,15 @@ const TESTNET_TOKENS: Record<number, Token[]> = {
 // Always register testnet chains — the runtime toggle needs them regardless of build-time VITE_NETWORK.
 // VITE_NETWORK only controls the default scope, not which chains are available.
 CHAINS.push(...TESTNET_CHAINS);
-Object.assign(TOKENS, TESTNET_TOKENS);
+export const TOKENS: Record<number, Token[]> = { ...MAINNET_TOKENS, ...TESTNET_TOKENS };
 
 export function getChain(id: number): Chain | undefined {
   return CHAINS.find((c) => c.id === id);
 }
 
-export function getTokens(chainId: number): Token[] {
+export function getTokens(chainId: number, scope?: "mainnet" | "testnet"): Token[] {
+  if (scope === "mainnet" && isTestnetChain(chainId)) return [];
+  if (scope === "testnet" && !isTestnetChain(chainId)) return [];
   return TOKENS[chainId] ?? [];
 }
 

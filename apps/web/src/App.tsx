@@ -57,19 +57,19 @@ function SwapPage() {
     const onIntent = (e: Event) => {
       const detail = (e as CustomEvent<IntentExecuteEventDetail | ParsedIntent>).detail;
       if (!detail) return;
-      if ("parsed" in detail) {
-        setPendingIntent({
-          parsed: detail.parsed,
-          autoQuote: detail.autoQuote,
-          requestId: detail.requestId,
-        });
-        return;
+      const parsed = ("parsed" in detail) ? detail.parsed : detail;
+      const autoQuote = ("parsed" in detail) ? !!detail.autoQuote : false;
+      const requestId = ("parsed" in detail) ? detail.requestId : Date.now();
+
+      // Strict scope isolation: if the intent is for testnet/mainnet, ensure the UI
+      // scope matches before we apply it to the quote form.
+      const desiredScope: ChainScope = parsed.network === "testnet" ? "testnet" : "mainnet";
+      const current = readChainScope();
+      if (desiredScope !== current) {
+        writeChainScope(desiredScope);
       }
-      setPendingIntent({
-        parsed: detail,
-        autoQuote: false,
-        requestId: Date.now(),
-      });
+
+      setPendingIntent({ parsed, autoQuote, requestId });
     };
     window.addEventListener("intent-execute", onIntent);
     return () => window.removeEventListener("intent-execute", onIntent);

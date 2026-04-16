@@ -379,12 +379,21 @@ export function createOperation(route: Route, walletAddress?: string, idempotenc
 }
 
 // Update operation status after on-chain confirmation.
-export function patchOperationStatus(operationId: string, status: string, txHash?: string): Promise<void> {
-  return fetch(`${getBase()}/operations/${operationId}/status`, {
+export async function patchOperationStatus(operationId: string, status: string, txHash?: string): Promise<void> {
+  const res = await fetch(`${getBase()}/operations/${operationId}/status`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ status, ...(txHash && { tx_hash: txHash }) }),
-  }).then(() => undefined);
+  });
+  const data = (await res.json().catch(() => ({}))) as ApiErrorBody;
+  if (!res.ok) {
+    const err = data.error ?? {};
+    throw new BridgeError(
+      err.message ?? `HTTP ${res.status}`,
+      err.error_type ?? "terminal",
+      err.error_code ?? "internal",
+    );
+  }
 }
 
 // Fetch a single operation with its events.
@@ -400,6 +409,7 @@ export interface ParsedIntentResponse {
   dst_token: string
   src_chain: string
   dst_chain: string
+  network?: string
 }
 
 // Parse a natural language intent via backend LLM integration.

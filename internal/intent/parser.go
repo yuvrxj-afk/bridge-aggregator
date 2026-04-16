@@ -22,17 +22,22 @@ type ParseResult struct {
 	DstToken string `json:"dst_token"`
 	SrcChain string `json:"src_chain"`
 	DstChain string `json:"dst_chain"`
+	Network  string `json:"network"` // "mainnet" | "testnet" (derived)
 }
 
 type ProviderConfig struct {
 	GeminiAPIKey  string
 	GeminiModel   string
 	OpenRouterKey string
+	AnthropicAPIKey string
+	AnthropicModel  string
 }
 
 const openRouterURL = "https://openrouter.ai/api/v1/chat/completions"
 const openRouterModel = "meta-llama/llama-3.1-8b-instruct:free"
 const defaultGeminiModel = "gemini-2.0-flash"
+const anthropicURL = "https://api.anthropic.com/v1/messages"
+const defaultAnthropicModel = "claude-haiku-4-5-20251001"
 
 const systemPrompt = `Extract bridge/swap intent from user text. Return ONLY valid JSON with no extra text or markdown:
 {"amount":"<number or empty string>","src_token":"<TOKEN symbol or empty>","dst_token":"<TOKEN symbol or empty>","src_chain":"<chain-slug or empty>","dst_chain":"<chain-slug or empty>"}
@@ -98,11 +103,26 @@ func parseWithClient(ctx context.Context, client doer, cfg ProviderConfig, text 
 		return nil, err
 	}
 	heuristic := parseHeuristic(normalizedInput)
-	if strings.TrimSpace(cfg.GeminiAPIKey) == "" && strings.TrimSpace(cfg.OpenRouterKey) == "" {
+	if strings.TrimSpace(cfg.AnthropicAPIKey) == "" && strings.TrimSpace(cfg.GeminiAPIKey) == "" && strings.TrimSpace(cfg.OpenRouterKey) == "" {
 		if hasSignal(heuristic) {
+			heuristic.Network = deriveNetwork(heuristic.SrcChain, heuristic.DstChain)
 			return heuristic, nil
 		}
 		return nil, errors.New("intent provider not configured")
+	}
+
+	if strings.TrimSpace(cfg.AnthropicAPIKey) != "" {
+		model := strings.TrimSpace(cfg.AnthropicModel)
+		if model == "" {
+			model = defaultAnthropicModel
+		}
+		res, err := parseWithAnthropic(ctx, client, cfg.AnthropicAPIKey, model, normalizedInput)
+		if err == nil {
+			out := mergeResults(res, heuristic)
+			out.Network = deriveNetwork(out.SrcChain, out.DstChain)
+			return out, nil
+		}
+		log.Printf("anthropic parse failed, falling back to gemini/openrouter: %s", truncate(err.Error(), 200))
 	}
 
 	if strings.TrimSpace(cfg.GeminiAPIKey) != "" {
@@ -112,7 +132,9 @@ func parseWithClient(ctx context.Context, client doer, cfg ProviderConfig, text 
 		}
 		res, err := parseWithGemini(ctx, client, cfg.GeminiAPIKey, model, normalizedInput)
 		if err == nil {
-			return mergeResults(res, heuristic), nil
+			out := mergeResults(res, heuristic)
+			out.Network = deriveNetwork(out.SrcChain, out.DstChain)
+			return out, nil
 		}
 		log.Printf("gemini parse failed, falling back to openrouter: %s", truncate(err.Error(), 200))
 	}
@@ -124,10 +146,13 @@ func parseWithClient(ctx context.Context, client doer, cfg ProviderConfig, text 
 	}
 	res, err := parseWithOpenRouter(ctx, client, cfg.OpenRouterKey, normalizedInput)
 	if err == nil {
-		return mergeResults(res, heuristic), nil
+		out := mergeResults(res, heuristic)
+		out.Network = deriveNetwork(out.SrcChain, out.DstChain)
+		return out, nil
 	}
 	if hasSignal(heuristic) {
 		log.Printf("openrouter parse failed, falling back to heuristic parse: %s", truncate(err.Error(), 200))
+		heuristic.Network = deriveNetwork(heuristic.SrcChain, heuristic.DstChain)
 		return heuristic, nil
 	}
 	return nil, err
@@ -268,6 +293,65 @@ func parseWithGemini(ctx context.Context, client doer, apiKey, model, text strin
 	return parseResultJSON(content)
 }
 
+func parseWithAnthropic(ctx context.Context, client doer, apiKey, model, text string) (*ParseResult, error) {
+	body, err := json.Marshal(map[string]any{
+		"model":     model,
+		"max_tokens": 200,
+		"system":    systemPrompt,
+		"messages": []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]string{
+					{"type": "text", "text": text},
+				},
+			},
+		},
+		"temperature": 0,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal anthropic request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build anthropic request: %w", err)
+	}
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("content-type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read anthropic response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("anthropic error (status %d): %s", resp.StatusCode, truncate(string(raw), 200))
+		return nil, fmt.Errorf("intent service unavailable")
+	}
+
+	var payload struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("parse anthropic response: %w", err)
+	}
+	for _, c := range payload.Content {
+		if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
+			return parseResultJSON(c.Text)
+		}
+	}
+	return nil, errors.New("anthropic returned empty content")
+}
+
 func parseResultJSON(content string) (*ParseResult, error) {
 	raw := strings.TrimSpace(content)
 	raw = strings.TrimPrefix(raw, "```json")
@@ -331,7 +415,24 @@ func mergeResults(primary, fallback *ParseResult) *ParseResult {
 	if strings.TrimSpace(out.DstChain) == "" {
 		out.DstChain = fallback.DstChain
 	}
+	if strings.TrimSpace(out.Network) == "" {
+		out.Network = fallback.Network
+	}
 	return &out
+}
+
+func isTestnetChainName(chain string) bool {
+	c := strings.ToLower(strings.TrimSpace(chain))
+	return c == "sepolia" || strings.HasSuffix(c, "-sepolia") || strings.Contains(c, "devnet")
+}
+
+func deriveNetwork(srcChain, dstChain string) string {
+	// If either side is a known testnet chain slug, classify the intent as testnet.
+	// This is used only for UI scope-gating; routing still depends on chain ids/tokens.
+	if isTestnetChainName(srcChain) || isTestnetChainName(dstChain) {
+		return "testnet"
+	}
+	return "mainnet"
 }
 
 func hasSignal(r *ParseResult) bool {

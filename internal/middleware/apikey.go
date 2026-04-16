@@ -18,8 +18,13 @@ func RequireAPIKey(key string) gin.HandlerFunc {
 			return
 		}
 		if c.GetHeader("X-API-Key") != key {
+			// Match the API's error envelope shape so the frontend can display a useful message.
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": "unauthorized — X-API-Key header required",
+				"error": gin.H{
+					"message":    "unauthorized — X-API-Key header required",
+					"error_type": "terminal",
+					"error_code": "unauthorized",
+				},
 			})
 			return
 		}

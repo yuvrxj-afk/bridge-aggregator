@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { parseUnits, formatUnits } from "viem";
 import { useAccount, useBalance } from "wagmi";
 import { useWallet } from "@solana/wallet-adapter-react";
@@ -127,10 +127,12 @@ function TokenDropdown({
   chain,
   value,
   onChange,
+  scope,
 }: {
   chain: Chain;
   value: Token;
   onChange: (address: string) => void;
+  scope: "mainnet" | "testnet";
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -145,7 +147,7 @@ function TokenDropdown({
     return () => document.removeEventListener("keydown", onKey);
   }, [open]);
 
-  const tokens = getTokens(chain.id);
+  const tokens = getTokens(chain.id, scope);
 
   return (
     <div ref={ref} className="relative">
@@ -213,6 +215,7 @@ function Panel({
   maxDisabled,
   balanceHint,
   availableChains,
+  tokenScope,
 }: {
   label: string;
   amount: string;
@@ -226,6 +229,7 @@ function Panel({
   maxDisabled?: boolean;
   balanceHint?: string;
   availableChains: Chain[];
+  tokenScope: "mainnet" | "testnet";
 }) {
   return (
     <div className="flex flex-col gap-5 bg-surface-container rounded px-6 py-6 min-h-[168px]">
@@ -246,7 +250,7 @@ function Panel({
       <div className="flex flex-wrap items-center gap-4 min-h-[78px]">
         <div className="flex items-center gap-1.5 shrink-0">
           <ChainDropdown value={chain} onChange={onChainChange} options={availableChains} />
-          <TokenDropdown chain={chain} value={token} onChange={onTokenChange} />
+          <TokenDropdown chain={chain} value={token} onChange={onTokenChange} scope={tokenScope} />
         </div>
 
         {editable ? (
@@ -322,8 +326,13 @@ export function QuoteForm({
   const streamAbort = useRef<AbortController | null>(null);
   const pendingAutoQuoteRef = useRef<number | null>(null);
   const lastAutoQuoteRunRef = useRef<number | null>(null);
-  const availableChains = CHAINS.filter((c) =>
-    chainScope === "testnet" ? isTestnetChain(c.id) : !isTestnetChain(c.id),
+  const lastAppliedIntentIdRef = useRef<number | null>(null);
+  const availableChains = useMemo(
+    () =>
+      CHAINS.filter((c) =>
+        chainScope === "testnet" ? isTestnetChain(c.id) : !isTestnetChain(c.id),
+      ),
+    [chainScope],
   );
 
   const srcIsNative = srcToken.address.toLowerCase() === ZERO_ADDRESS;
@@ -343,15 +352,33 @@ export function QuoteForm({
   // Apply parsed intent from IntentPanel, preferring chains within current scope.
   useEffect(() => {
     if (!intent) return;
+    if (intent.network && intent.network !== chainScope) {
+      // The App should auto-switch scope before sending the intent here, but keep
+      // this guard to prevent cross-network prefill if timing ever races.
+      const msg = `Intent targets ${intent.network}, but your UI is set to ${chainScope}. Switching scope will apply it.`;
+      setFormError((prev) => (prev === msg ? prev : msg));
+      onError(msg);
+      return;
+    }
+    // Prevent "dancing": only apply a dispatched intent once (QuoteForm can re-render
+    // frequently due to balances, scope toggles, and streaming routes).
+    if (intentRequestId && lastAppliedIntentIdRef.current === intentRequestId) return;
+    if (intentRequestId) lastAppliedIntentIdRef.current = intentRequestId;
+
+    // Clear any previous intent error before applying a new one.
+    setFormError(null);
     if (intent.amount) setAmount(intent.amount);
 
     const preferredChains = availableChains.length > 0 ? availableChains : CHAINS;
     const pickChain = (name: string) =>
       preferredChains.find(ch => ch.name === name) ?? CHAINS.find(ch => ch.name === name);
     const pickToken = (chainId: number, symbol: string) => {
-      const tokens = TOKENS[chainId];
+      const tokens = getTokens(chainId, chainScope);
       if (!tokens || tokens.length === 0) return null;
-      return tokens.find(tk => tk.symbol === symbol) ?? tokens[0];
+      // IMPORTANT: do not silently fall back to the first token. If the intent asks
+      // for a token we don't support on that chain (e.g. USDT on Base Sepolia),
+      // falling back produces an incorrect prefill and a confusing execution.
+      return tokens.find(tk => tk.symbol === symbol) ?? null;
     };
 
     if (intent.srcChain) {
@@ -359,7 +386,13 @@ export function QuoteForm({
       if (c) {
         setSrcChain(c);
         const t = pickToken(c.id, intent.srcToken);
-        if (t) setSrcToken(t);
+        if (t) {
+          setSrcToken(t);
+        } else if (intent.srcToken) {
+          const msg = `Intent requested ${intent.srcToken} on ${c.label}, but that token isn't available in this app's registry.`;
+          setFormError(prev => (prev === msg ? prev : msg));
+          onError(msg);
+        }
       }
     }
     if (intent.dstChain) {
@@ -367,13 +400,19 @@ export function QuoteForm({
       if (c) {
         setDstChain(c);
         const t = pickToken(c.id, intent.dstToken);
-        if (t) setDstToken(t);
+        if (t) {
+          setDstToken(t);
+        } else if (intent.dstToken) {
+          const msg = `Intent requested ${intent.dstToken} on ${c.label}, but that token isn't available in this app's registry.`;
+          setFormError(prev => (prev === msg ? prev : msg));
+          onError(msg);
+        }
       }
     }
     if (intentAutoQuote && intentRequestId) {
       pendingAutoQuoteRef.current = intentRequestId;
     }
-  }, [intent, intentAutoQuote, intentRequestId, availableChains]);
+  }, [intent, intentAutoQuote, intentRequestId, availableChains, onError]);
 
   useEffect(() => {
     onDirty?.();
@@ -395,7 +434,7 @@ export function QuoteForm({
     if (!availableChains.some((c) => c.id === srcChain.id)) {
       const fallback = availableChains[0];
       setSrcChain(fallback);
-      const nextTokens = getTokens(fallback.id);
+      const nextTokens = getTokens(fallback.id, chainScope);
       if (nextTokens.length) {
         const preferred = nextTokens.find(t => t.symbol === srcToken.symbol) ?? nextTokens[0];
         setSrcToken(preferred);
@@ -404,7 +443,7 @@ export function QuoteForm({
     if (!availableChains.some((c) => c.id === dstChain.id)) {
       const fallback = availableChains[Math.min(1, availableChains.length - 1)];
       setDstChain(fallback);
-      const nextTokens = getTokens(fallback.id);
+      const nextTokens = getTokens(fallback.id, chainScope);
       if (nextTokens.length) {
         const preferred = nextTokens.find(t => t.symbol === dstToken.symbol) ?? nextTokens[0];
         setDstToken(preferred);
@@ -416,7 +455,7 @@ export function QuoteForm({
     const nextChain = CHAINS.find((c) => c.id === chainId);
     if (!nextChain) return;
     setSrcChain(nextChain);
-    const tokens = getTokens(chainId);
+    const tokens = getTokens(chainId, chainScope);
     if (tokens.length) setSrcToken(tokens[0]);
   };
 
@@ -424,7 +463,7 @@ export function QuoteForm({
     const nextChain = CHAINS.find((c) => c.id === chainId);
     if (!nextChain) return;
     setDstChain(nextChain);
-    const tokens = getTokens(chainId);
+    const tokens = getTokens(chainId, chainScope);
     if (tokens.length) setDstToken(tokens[0]);
   };
 
@@ -547,7 +586,7 @@ export function QuoteForm({
       // Enable swap→bridge composition by telling the backend the *source-chain* address
       // for the destination token symbol (e.g. dst=Base USDC, src-side USDC on Ethereum).
       if (!srcIsSolana && !dstIsSolana && srcChain.id !== dstChain.id && srcToken.symbol !== dstToken.symbol) {
-        const dstOnSource = getTokens(srcChain.id).find((t) => t.symbol === dstToken.symbol);
+        const dstOnSource = getTokens(srcChain.id, chainScope).find((t) => t.symbol === dstToken.symbol);
         if (dstOnSource?.address) {
           metadata.source_swap_token_out_address = dstOnSource.address;
           metadata.source_swap_token_out_decimals = dstOnSource.decimals;
@@ -686,12 +725,13 @@ export function QuoteForm({
         token={srcToken}
         onChainChange={setSrc}
         onTokenChange={(a) =>
-          setSrcToken(getTokens(srcChain.id).find((t) => t.address === a)!)
+          setSrcToken(getTokens(srcChain.id, chainScope).find((t) => t.address === a)!)
         }
         onMaxClick={handleSetMax}
         maxDisabled={!address || !srcBalance || srcBalance.value === 0n}
         balanceHint={balanceHint}
         availableChains={availableChains}
+        tokenScope={chainScope}
       />
 
       {/* Flip button — overlaps both panels */}
@@ -727,9 +767,10 @@ export function QuoteForm({
         token={dstToken}
         onChainChange={setDst}
         onTokenChange={(a) =>
-          setDstToken(getTokens(dstChain.id).find((t) => t.address === a)!)
+          setDstToken(getTokens(dstChain.id, chainScope).find((t) => t.address === a)!)
         }
         availableChains={availableChains}
+        tokenScope={chainScope}
       />
 
       {/* Slippage + info row */}

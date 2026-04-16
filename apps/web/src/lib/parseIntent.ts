@@ -1,12 +1,15 @@
 import { CHAINS, TOKENS } from "../tokens";
 import type { ParsedIntentResponse } from "../api";
 
+export type IntentNetwork = "mainnet" | "testnet";
+
 export interface ParsedIntent {
   amount: string;
   srcToken: string;
   dstToken: string;
   srcChain: string;  // canonical chain name, e.g. "ethereum", "base-sepolia"
   dstChain: string;
+  network: IntentNetwork;
 }
 
 export interface IntentExecuteEventDetail {
@@ -93,6 +96,11 @@ const TESTNET_TO_MAINNET: Record<string, string> = {
 
 function isTestnetChainName(name: string): boolean {
   return name === "sepolia" || name.endsWith("-sepolia");
+}
+
+function deriveNetwork(srcChain: string, dstChain: string): IntentNetwork {
+  if (isTestnetChainName(srcChain) || isTestnetChainName(dstChain)) return "testnet";
+  return "mainnet";
 }
 
 function coerceNetworkFamily(parsed: ParsedIntent): ParsedIntent {
@@ -185,6 +193,7 @@ export function parseIntent(text: string): ParsedIntent | null {
     dstToken: dstToken!,
     srcChain: srcChain ?? "",
     dstChain: dstChain ?? srcChain ?? "",
+    network: deriveNetwork(srcChain ?? "", dstChain ?? srcChain ?? ""),
   };
 }
 
@@ -196,8 +205,15 @@ export function normalizeBackendIntent(raw: ParsedIntentResponse): ParsedIntent 
     dstToken: ((raw.dst_token ?? "").trim() || (raw.src_token ?? "").trim()).toUpperCase(),
     srcChain: (raw.src_chain ?? "").trim().toLowerCase(),
     dstChain: (raw.dst_chain ?? "").trim().toLowerCase(),
+    network: (raw.network === "testnet" ? "testnet" : "mainnet"),
   };
-  return coerceNetworkFamily(normalized);
+  const coerced = coerceNetworkFamily(normalized);
+  // Backend-provided network is authoritative when present, but if the backend
+  // is old or omitted it, derive from chains for forward compatibility.
+  if (!raw.network) {
+    coerced.network = deriveNetwork(coerced.srcChain, coerced.dstChain);
+  }
+  return coerced;
 }
 
 export function validateIntent(parsed: ParsedIntent): string[] {
@@ -217,5 +233,6 @@ export function mergeParsedIntent(base: ParsedIntent | null, update: ParsedInten
     dstToken: update.dstToken || base.dstToken,
     srcChain: update.srcChain || base.srcChain,
     dstChain: update.dstChain || base.dstChain,
+    network: update.network || base.network,
   };
 }

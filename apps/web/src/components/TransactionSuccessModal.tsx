@@ -1,4 +1,5 @@
 import { motion, AnimatePresence } from "framer-motion";
+import { explorerAddressUrl } from "../lib/explorer";
 
 // Bridge-specific status page URLs
 function bridgeStatusUrl(bridgeId: string, txHash: string): string | null {
@@ -33,7 +34,10 @@ interface TransactionSuccessModalProps {
   dstAsset?: string;         // destination token symbol
   estimatedTimeSec?: number; // seconds until arrival
   bridgeId?: string;         // for bridge-specific status link
-  srcChainId?: number;
+  /** EVM chain id where funds should arrive (for wallet/token activity link). */
+  dstChainId?: number;
+  /** Recipient wallet on the destination chain (usually the connected address). */
+  recipientAddress?: string;
   onViewOps: () => void;
   onDone: () => void;
 }
@@ -51,11 +55,17 @@ export function TransactionSuccessModal({
   dstAsset,
   estimatedTimeSec,
   bridgeId,
+  dstChainId,
+  recipientAddress,
   onViewOps,
   onDone,
 }: TransactionSuccessModalProps) {
   const arrivalTime = arrivalTimeLabel(estimatedTimeSec);
   const statusUrl = bridgeId ? bridgeStatusUrl(bridgeId, txHash) : null;
+  const destWalletUrl =
+    dstChainId && recipientAddress && recipientAddress.startsWith("0x") && recipientAddress.length >= 42
+      ? explorerAddressUrl(dstChainId, recipientAddress)
+      : null;
   return (
     <AnimatePresence>
       {open && (
@@ -192,6 +202,25 @@ export function TransactionSuccessModal({
                     View ↗
                   </span>
                 </a>
+                {destWalletUrl && (
+                  <a
+                    href={destWalletUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-between px-4 py-2.5 transition-colors"
+                    style={{
+                      backgroundColor: "rgba(74,222,128,0.06)",
+                      border: "1px solid rgba(74,222,128,0.15)",
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.backgroundColor = "rgba(74,222,128,0.10)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.backgroundColor = "rgba(74,222,128,0.06)"; }}
+                  >
+                    <span className="text-[11px] font-mono" style={{ color: "#4ade80" }}>
+                      Verify on destination
+                    </span>
+                    <span className="text-[11px]" style={{ color: "#908fa1" }}>↗</span>
+                  </a>
+                )}
                 {statusUrl && (
                   <a
                     href={statusUrl}

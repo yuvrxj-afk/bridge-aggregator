@@ -36,3 +36,15 @@ func TestValidateExecuteRequest_QuoteExpired(t *testing.T) {
 		t.Fatalf("expected ErrQuoteExpired, got %v", err)
 	}
 }
+
+func TestIsValidTransition_pendingToCompletedWithTxHash(t *testing.T) {
+	if isValidTransition(models.OperationStatusPending, models.OperationStatusCompleted, "") {
+		t.Fatal("pending→completed must require non-empty tx hash")
+	}
+	if !isValidTransition(models.OperationStatusPending, models.OperationStatusCompleted, "0xabc") {
+		t.Fatal("pending→completed should be allowed when tx hash is set")
+	}
+	if !isValidTransition(models.OperationStatusPending, models.OperationStatusSubmitted, "") {
+		t.Fatal("pending→submitted remains valid (tx hash enforced in UpdateOperationStatus)")
+	}
+}

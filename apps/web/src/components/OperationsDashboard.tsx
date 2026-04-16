@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useAccount } from "wagmi";
 import { ChainIcon } from "./ChainIcon";
 import { fetchAdapterHealth, fetchOperations, type AdapterHealth, type OperationDetail } from "../api";
 import { formatUnits } from "viem";
+import { explorerAddressUrl, explorerTxUrl } from "../lib/explorer";
 
 // ── Design tokens ────────────────────────────────────────────────────────────
 
@@ -80,21 +81,6 @@ function formatAmount(amountBaseUnits: string, decimals: number): string {
   }
 }
 
-function explorerUrl(chainId: number, txHash: string): string {
-  const explorers: Record<number, string> = {
-    1:         "https://etherscan.io/tx/",
-    10:        "https://optimistic.etherscan.io/tx/",
-    137:       "https://polygonscan.com/tx/",
-    42161:     "https://arbiscan.io/tx/",
-    8453:      "https://basescan.org/tx/",
-    11155111:  "https://sepolia.etherscan.io/tx/",
-    84532:     "https://sepolia.basescan.org/tx/",
-    421614:    "https://sepolia.arbiscan.io/tx/",
-    11155420:  "https://sepolia-optimism.etherscan.io/tx/",
-  };
-  const base = explorers[chainId] ?? `https://blockscan.com/tx/`;
-  return base + txHash;
-}
 
 function relativeTime(dateStr: string): string {
   const diff = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
@@ -131,7 +117,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function TxHashLink({ txHash, chainId }: { txHash: string; chainId: number }) {
-  const url = explorerUrl(chainId, txHash);
+  const url = explorerTxUrl(chainId, txHash);
   return (
     <a
       href={url}
@@ -147,7 +133,7 @@ function TxHashLink({ txHash, chainId }: { txHash: string; chainId: number }) {
   );
 }
 
-function OperationCard({ op }: { op: OperationDetail }) {
+function OperationCard({ op, viewerWallet }: { op: OperationDetail; viewerWallet?: string }) {
   const firstHop = op.route.hops[0];
   const lastHop  = op.route.hops[op.route.hops.length - 1];
   if (!firstHop || !lastHop) return null;
@@ -227,6 +213,24 @@ function OperationCard({ op }: { op: OperationDetail }) {
               tx
             </span>
             <TxHashLink txHash={op.tx_hash} chainId={srcChainId} />
+          </div>
+        )}
+
+        {viewerWallet && dstChainId > 0 && viewerWallet.startsWith("0x") && viewerWallet.length >= 42 && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10px] uppercase tracking-wider" style={{ color: C.onSurfaceVariant }}>
+              verify
+            </span>
+            <a
+              href={explorerAddressUrl(dstChainId, viewerWallet)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[11px] font-mono hover:underline"
+              style={{ color: C.accent }}
+              title="Open your wallet on the destination chain explorer (token transfers)"
+            >
+              wallet on {lastHop.to_chain ?? "destination"} ↗
+            </a>
           </div>
         )}
 
@@ -387,52 +391,6 @@ function AdapterHealthPanel({
   );
 }
 
-function RecentActivity({ ops }: { ops: OperationDetail[] }) {
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [ops.length]);
-
-  return (
-    <div
-      className="rounded overflow-hidden flex flex-col"
-      style={{ backgroundColor: C.surfaceContainerLow }}
-    >
-      <div className="px-4 py-2.5" style={{ backgroundColor: C.surfaceContainer }}>
-        <span className="text-xs font-semibold tracking-wide" style={{ color: C.onSurface }}>
-          Recent Activity
-        </span>
-      </div>
-
-      <div className="h-[280px] overflow-y-auto px-4 py-3 flex flex-col gap-1 font-mono text-[11px] leading-relaxed">
-        {ops.length === 0 ? (
-          <span style={{ color: C.onSurfaceVariant }}>No operations yet</span>
-        ) : (
-          ops.flatMap(op =>
-            (op.events ?? []).map((ev, i) => (
-              <div key={`${op.operation_id}-${i}`} className="flex gap-2">
-                <span className="tabular-nums shrink-0" style={{ color: C.onSurfaceVariant }}>
-                  {relativeTime(ev.created_at)}
-                </span>
-                <span
-                  className="font-semibold shrink-0"
-                  style={{ color: ev.event_type === "status_transition" && ev.to_status === "failed" ? C.err : C.accent }}
-                >
-                  [{ev.event_type.toUpperCase().slice(0, 3)}]
-                </span>
-                <span style={{ color: C.onSurface }}>
-                  op={truncateId(op.operation_id)} {ev.to_status ? `→ ${ev.to_status}` : ""} {ev.tx_hash ? `hash=${ev.tx_hash.slice(0, 10)}…` : ""}
-                </span>
-              </div>
-            ))
-          )
-        )}
-        <div ref={bottomRef} />
-      </div>
-    </div>
-  );
-}
 
 // ── Main component ───────────────────────────────────────────────────────────
 
@@ -445,28 +403,16 @@ export function OperationsDashboard() {
   const [adapters, setAdapters] = useState<AdapterHealth[]>([]);
   const [healthLoading, setHealthLoading] = useState(true);
   const [healthError, setHealthError] = useState<string | null>(null);
-  const [chainScope, setChainScope] = useState<string>(() => {
-    const s = window.localStorage.getItem("chain_scope");
-    return s === "testnet" ? "testnet" : "mainnet";
-  });
 
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent<string>).detail;
-      if (detail === "mainnet" || detail === "testnet") setChainScope(detail);
-    };
-    window.addEventListener("chain-scope-change", handler);
-    return () => window.removeEventListener("chain-scope-change", handler);
-  }, []);
-
-  const loadOps = useCallback(async (cancelled: { v: boolean }, scope: string, wallet: string) => {
+  const loadOps = useCallback(async (cancelled: { v: boolean }, wallet: string, opts?: { silent?: boolean }) => {
     if (!wallet) {
       setOps([]);
       setOpsError(null);
       setOpsLoading(false);
       return;
     }
-    setOpsLoading(true);
+    const silent = opts?.silent === true;
+    if (!silent) setOpsLoading(true);
     try {
       // Fetch across all scopes. If the UI chain-scope toggle drifts from the
       // API instance that created the operation (mainnet vs testnet), we still
@@ -479,24 +425,28 @@ export function OperationsDashboard() {
       if (cancelled.v) return;
       setOpsError(e instanceof Error ? e.message : "Failed to load operations");
     } finally {
-      if (!cancelled.v) setOpsLoading(false);
+      if (!cancelled.v && !silent) setOpsLoading(false);
     }
   }, []);
+
+  const refreshOps = useCallback(() => {
+    const wallet = walletAddress ?? "";
+    if (!wallet) return;
+    const cancelled = { v: false };
+    void loadOps(cancelled, wallet, { silent: false });
+  }, [loadOps, walletAddress]);
 
   useEffect(() => {
     const wallet = walletAddress ?? "";
     const cancelled = { v: false };
-    loadOps(cancelled, chainScope, wallet);
-    const id = window.setInterval(() => loadOps(cancelled, chainScope, wallet), 10_000);
-    // Refresh immediately when any operation status changes (fired by ExecutePanel / PendingClaimsBanner).
-    const onUpdate = () => loadOps(cancelled, chainScope, wallet);
+    loadOps(cancelled, wallet, { silent: false });
+    const onUpdate = () => loadOps(cancelled, wallet, { silent: true });
     window.addEventListener("operation-updated", onUpdate);
     return () => {
       cancelled.v = true;
-      window.clearInterval(id);
       window.removeEventListener("operation-updated", onUpdate);
     };
-  }, [loadOps, chainScope, walletAddress]);
+  }, [loadOps, walletAddress]);
 
   useEffect(() => {
     let cancelled = false;
@@ -540,7 +490,7 @@ export function OperationsDashboard() {
           {/* ── Left: operations ── */}
           <div className="flex-1 min-w-0 flex flex-col gap-5">
             {/* Tab bar */}
-            <div className="flex gap-1 rounded p-1" style={{ backgroundColor: C.surfaceContainer }}>
+            <div className="flex gap-1 rounded p-1 items-center" style={{ backgroundColor: C.surfaceContainer }}>
               {TAB_KEYS.map((key) => {
                 const active = tab === key;
                 const count = ops.filter(op => dbStatusToTab(op.status) === key).length;
@@ -566,8 +516,17 @@ export function OperationsDashboard() {
                   </button>
                 );
               })}
+              {walletAddress && (
+                <button
+                  type="button"
+                  onClick={refreshOps}
+                  className="shrink-0 px-3 py-2 text-[10px] font-bold uppercase tracking-wider rounded transition-opacity hover:opacity-80"
+                  style={{ color: C.accent, border: `1px solid ${C.accent}40` }}
+                >
+                  Refresh
+                </button>
+              )}
             </div>
-
             {/* Operation cards */}
             {!walletAddress ? (
               <div className="py-16 text-center">
@@ -590,7 +549,7 @@ export function OperationsDashboard() {
             ) : (
               <div className="flex flex-col gap-3 overflow-y-auto max-h-[72vh] pr-1">
                 {filteredOps.map((op) => (
-                  <OperationCard key={op.operation_id} op={op} />
+                  <OperationCard key={op.operation_id} op={op} viewerWallet={walletAddress ?? undefined} />
                 ))}
               </div>
             )}
@@ -598,7 +557,6 @@ export function OperationsDashboard() {
 
           {/* ── Right sidebar ── */}
           <div className="w-full lg:w-[380px] shrink-0 flex flex-col gap-4 lg:sticky lg:top-6">
-            <RecentActivity ops={ops} />
             <AdapterHealthPanel adapters={adapters} loading={healthLoading} error={healthError} />
           </div>
         </div>

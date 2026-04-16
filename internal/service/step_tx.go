@@ -296,6 +296,9 @@ func populateCCTPStep(h models.Hop, pd map[string]json.RawMessage, req models.St
 	if tokenMessenger == "" || burnToken == "" {
 		return nil, fmt.Errorf("cctp provider_data incomplete: need token_messenger_src and burn_token")
 	}
+	if strings.EqualFold(burnToken, "0x0000000000000000000000000000000000000000") {
+		return nil, fmt.Errorf("cctp provider_data invalid: burn_token must not be zero address")
+	}
 
 	// mintRecipient must be the destination EVM address left-padded to bytes32.
 	recipient := firstNonEmpty(req.ReceiverAddress, req.SenderAddress)
@@ -598,10 +601,6 @@ const arbSysWithdrawEthABI = `{"name":"withdrawEth","type":"function","stateMuta
 
 func populateCanonicalStep(h models.Hop, pd map[string]json.RawMessage, req models.StepTransactionRequest, network string) (*models.StepTransactionResponse, error) {
 	hopIndex := req.HopIndex
-	amount, err := derivePositiveAmountForHop(h, pd)
-	if err != nil {
-		return nil, fmt.Errorf("canonical_%s: %w", network, err)
-	}
 	inputToken := jsonString(pd["input_token"])
 	outputToken := jsonString(pd["output_token"])
 	depositOnL1Raw := jsonString(pd["deposit_on_l1"])
@@ -613,6 +612,32 @@ func populateCanonicalStep(h models.Hop, pd map[string]json.RawMessage, req mode
 
 	isETH := inputToken == "0x0000000000000000000000000000000000000000" ||
 		inputToken == "0xEeeeeEeeeEeeeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
+
+	// Guard against “unit mixups” where hop metadata and provider_data disagree.
+	// Example failure mode observed: a canonical depositETH got executed with a value
+	// equal to a USDC base-unit amount (6 decimals) instead of ETH wei (18 decimals).
+	hopAsset := strings.ToUpper(strings.TrimSpace(h.FromAsset))
+	if isETH && hopAsset != "" && hopAsset != "ETH" && hopAsset != "WETH" {
+		return nil, fmt.Errorf("canonical_%s: %w: hop from_asset=%q but provider_data input_token is native ETH", network, ErrEncodingGuard, h.FromAsset)
+	}
+	if !isETH && hopAsset == "ETH" {
+		return nil, fmt.Errorf("canonical_%s: %w: hop from_asset=ETH but provider_data input_token is not ETH", network, ErrEncodingGuard)
+	}
+
+	amount := ""
+	if isETH {
+		// For ETH, only trust hop.AmountInBaseUnits (wei). Do not fall back to provider_data["amount"].
+		amount = strings.TrimSpace(h.AmountInBaseUnits)
+		if err := requirePositiveUintField("amount_in_base_units", amount); err != nil {
+			return nil, fmt.Errorf("canonical_%s: %w", network, err)
+		}
+	} else {
+		var err error
+		amount, err = derivePositiveAmountForHop(h, pd)
+		if err != nil {
+			return nil, fmt.Errorf("canonical_%s: %w", network, err)
+		}
+	}
 
 	var steps []models.BridgeStepCall
 
